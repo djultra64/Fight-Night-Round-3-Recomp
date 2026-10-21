@@ -41,6 +41,14 @@ For an existing supported extraction, pass its location instead:
 
 Use the supplied launcher so that local asset preparation and **SAVE AND RESTART** work correctly. Saves, settings, logs and caches are stored outside the package.
 
+## Help Wanted: 60 FPS
+
+We explored removing the frame limiter and increasing the native frame rate. Those approaches accelerated intros and gameplay and caused audio desynchronization. We also explored keeping simulation at 30 Hz while drawing interpolated frames at 60 Hz. Backgrounds and camera movement could look smoother, but fighters remained choppy, animation could appear interrupted or slow, and flickering occurred. These approaches are not included in the beta.
+
+The research points toward deeper separation of simulation timing from rendering, including interpolation of skinned fighter poses and safe ownership of the GPU resources used by each frame. Repeating scene draws can also advance game state or reduce the actual simulation rate when rendering falls behind. These are engineering leads, not a proven explanation for every artifact or a completed 60 FPS solution.
+
+PRs and forks exploring proper 60 FPS are welcome. The goal is distinct, smoothly animated frames while preserving natural gameplay speed, original timing and synchronized audio. Please keep experiments optional and preserve the original 30 FPS path; a higher presentation counter alone does not establish success.
+
 ## Documentation
 
 - [Installation](docs/beta/installation.md)

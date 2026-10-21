@@ -2,6 +2,7 @@
 import hashlib
 import importlib.util
 import json
+import os
 from pathlib import Path
 import shutil
 import sys
@@ -14,6 +15,48 @@ SOURCE = Path(__file__).resolve().parents[1] / 'tools/port-build/install.py'
 
 
 class InstallerTests(unittest.TestCase):
+    @classmethod
+    def setUpClass(cls):
+        cls.windows_helper = None
+        if os.name != 'nt':
+            return
+        compiler = shutil.which('clang') or shutil.which('clang-cl')
+        if not compiler:
+            raise unittest.SkipTest('Windows extractor fixture requires a native C compiler')
+        cls.helper_temp = tempfile.TemporaryDirectory(prefix='fnr3 native extractor fixture ')
+        cls.addClassCleanup(cls.helper_temp.cleanup)
+        source = Path(cls.helper_temp.name) / 'fixture.c'
+        source.write_text(r'''#include <windows.h>
+#include <wchar.h>
+#include <stdlib.h>
+int wmain(void) {
+  wchar_t script[32768], command[32768];
+  if (!GetModuleFileNameW(NULL, script, 32760)) return 90;
+  wcscat_s(script, 32768, L".py");
+  const wchar_t *python = _wgetenv(L"FNR3_TEST_PYTHON");
+  if (!python) return 91;
+  wchar_t *tail = GetCommandLineW();
+  if (*tail == L'"') { ++tail; while (*tail && *tail != L'"') ++tail; if (*tail) ++tail; }
+  else { while (*tail && *tail != L' ' && *tail != L'\t') ++tail; }
+  if (_snwprintf_s(command, 32768, _TRUNCATE, L"\"%ls\" \"%ls\" %ls", python, script, tail) < 0) return 92;
+  STARTUPINFOW startup = {sizeof(startup)};
+  PROCESS_INFORMATION process;
+  if (!CreateProcessW(python, command, NULL, NULL, TRUE, 0, NULL, NULL, &startup, &process)) return 93;
+  WaitForSingleObject(process.hProcess, INFINITE);
+  DWORD result = 94;
+  GetExitCodeProcess(process.hProcess, &result);
+  CloseHandle(process.hThread); CloseHandle(process.hProcess);
+  return (int)result;
+}
+''')
+        cls.windows_helper = Path(cls.helper_temp.name) / 'extract-xiso.exe'
+        args = [compiler, str(source)]
+        if Path(compiler).stem == 'clang-cl':
+            args += ['/nologo', '/O2', '/Fe:' + str(cls.windows_helper)]
+        else:
+            args += ['-O2', '-o', str(cls.windows_helper)]
+        subprocess.run(args, check=True, cwd=cls.helper_temp.name, capture_output=True)
+
     def setUp(self):
         spec = importlib.util.spec_from_file_location('port_install', SOURCE)
         self.installer = importlib.util.module_from_spec(spec)
@@ -32,11 +75,17 @@ class InstallerTests(unittest.TestCase):
         (self.package / 'support/input-manifest.json').write_text(json.dumps(manifest))
         # Executable fixture models the external extractor boundary and requires
         # precisely the read-only extraction flags used by the pinned tool.
-        self.extractor = self.package / 'support/extract-xiso'
+        self.extractor = self.package / ('support/extract-xiso.exe' if os.name == 'nt' else 'support/extract-xiso')
+        if self.windows_helper is not None:
+            shutil.copyfile(self.windows_helper, self.extractor)
+            environment = patch.dict(os.environ, {'FNR3_TEST_PYTHON': sys.executable})
+            environment.start()
+            self.addCleanup(environment.stop)
         self.write_extractor("(out / 'default.xex').write_bytes(b'fixture original XEX')\n(out / 'data.bin').write_bytes(b'content')")
 
     def write_extractor(self, body):
-        self.extractor.write_text('#!' + sys.executable + '\nimport sys\nfrom pathlib import Path\nassert sys.argv[1:3] == ["-x", "-q"]\nassert sys.argv[3] == "-d"\nassert Path(sys.argv[5]).is_file()\nout = Path(sys.argv[4])\nout.mkdir(exist_ok=True)\n' + body + '\n')
+        script = Path(str(self.extractor) + '.py') if os.name == 'nt' else self.extractor
+        script.write_text('#!' + sys.executable + '\nimport sys\nfrom pathlib import Path\nassert sys.argv[1:3] == ["-x", "-q"]\nassert sys.argv[3] == "-d"\nassert Path(sys.argv[5]).is_file()\nout = Path(sys.argv[4])\nout.mkdir(exist_ok=True)\n' + body + '\n')
         self.extractor.chmod(0o755)
 
     def install(self, **kwargs):
