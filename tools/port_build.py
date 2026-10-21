@@ -35,6 +35,7 @@ PATCHES = (
     'rexglue-sdk-xma-split-frame-header.patch',
     'rexglue-sdk-vulkan-shared-memory-sync.patch',
     'rexglue-sdk-d3d12-queue-fence-result.patch',
+    'rexglue-sdk-mnk-capture-coalescing.patch',
     'tools/port-input/rexglue-native-glyphs.patch',
     'tools/port-input/rexglue-sdl-observer-abi.patch',
     'tools/port-input/rexglue-native-glyph-diagnostics.patch',

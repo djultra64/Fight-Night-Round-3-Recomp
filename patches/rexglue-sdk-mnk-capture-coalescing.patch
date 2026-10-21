@@ -1,0 +1,73 @@
+--- a/src/input/mnk/mnk_input_driver.cpp
++++ b/src/input/mnk/mnk_input_driver.cpp
+@@ -186,6 +186,7 @@
+     {
+       std::lock_guard lock(state_mutex_);
+       attached_window_ = nullptr;
++      mouse_capture_requested_.store(false);
+     }
+     if (mouse_capture_update_queued_.load(std::memory_order_relaxed)) {
+       window->app_context().ExecutePendingFunctionsFromUIThread();
+@@ -397,21 +398,32 @@
+ }
+ 
+ void MnkInputDriver::QueueMouseCaptureUpdate(bool should_capture) {
+-  mouse_capture_requested_.store(should_capture, std::memory_order_relaxed);
++  std::lock_guard lock(state_mutex_);
++  if (!attached_window_) {
++    return;
++  }
++  // Do not revive a capture request computed before a concurrent focus loss.
++  should_capture = should_capture && has_focus_.load();
++  const bool previous_request = mouse_capture_requested_.exchange(should_capture);
++  if (previous_request == should_capture) {
++    return;
++  }
+   bool already_queued = false;
+   if (!mouse_capture_update_queued_.compare_exchange_strong(already_queued, true)) {
+     return;
+   }
+-  std::lock_guard lock(state_mutex_);
+-  if (!attached_window_) {
+-    mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+-    return;
+-  }
++  // Stable input polls must not flood the UI queue and starve SDL events.
+   // Deferred, not CallInUIThread: running inline would re-enter state_mutex_.
+-  attached_window_->app_context().CallInUIThreadDeferred([this] {
+-    mouse_capture_update_queued_.store(false, std::memory_order_relaxed);
+-    ApplyMouseCaptureFromUIThread();
+-  });
++  if (!attached_window_->app_context().CallInUIThreadDeferred([this] {
++        // Publish availability before loading the latest request, so a change
++        // arriving during application either takes effect now or queues again.
++        mouse_capture_update_queued_.store(false);
++        ApplyMouseCaptureFromUIThread();
++      })) {
++    // A rejected callback has not applied this transition. Permit a retry.
++    mouse_capture_requested_.store(previous_request);
++    mouse_capture_update_queued_.store(false);
++  }
+ }
+ 
+ void MnkInputDriver::ApplyMouseCaptureFromUIThread() {
+@@ -419,7 +431,7 @@
+   if (!window) {
+     return;
+   }
+-  bool should_capture = mouse_capture_requested_.load(std::memory_order_relaxed);
++  bool should_capture = mouse_capture_requested_.load();
+   if (should_capture == mouse_captured_) {
+     return;
+   }
+@@ -562,9 +574,9 @@
+   has_focus_ = false;
+   // Withdraw the request too, or an update queued before the focus loss grabs
+   // the cursor straight back.
+-  mouse_capture_requested_.store(false, std::memory_order_relaxed);
+   {
+     std::lock_guard lock(state_mutex_);
++    mouse_capture_requested_.store(false);
+     std::memset(key_down_, 0, sizeof(key_down_));
+     mouse_dx_ = 0.0f;
+     mouse_dy_ = 0.0f;
