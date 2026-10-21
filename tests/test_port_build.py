@@ -297,7 +297,10 @@ class PackageTests(unittest.TestCase):
         digest = release.archive_package(package, output)
         self.assertEqual(digest, pb.sha(output))
         with tarfile.open(output) as archive:
-            self.assertEqual(archive.getmember('beta/launch.sh').mode, 0o755)
+            if os.name != 'nt':
+                self.assertEqual(archive.getmember('beta/launch.sh').mode, 0o755)
+            else:
+                self.assertEqual(archive.getmember('beta/launch.sh').mode, 0o644)
             self.assertTrue(all(member.uid == 0 and not member.uname for member in archive.getmembers()))
         nested = package / 'private'
         nested.mkdir()

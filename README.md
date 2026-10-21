@@ -59,6 +59,12 @@ PRs and forks exploring proper 60 FPS are welcome. The goal is distinct, smoothl
 - [Beta 0.7 release notes](docs/beta/release-notes-0.7.md)
 - [Changelog](CHANGELOG.md), [contributing](CONTRIBUTING.md), [security](SECURITY.md)
 
+## AI Disclosure
+
+I use **OpenAI Codex** to assist with research, reverse-engineering analysis, code implementation, debugging, tests, builds, packaging, and documentation. I direct that work, contribute code reviews and ideas for implementation, evaluate the game's behavior through hands-on testing, and decide which changes and releases to accept. Validation claims remain limited to the recorded builds and scenarios.
+
+The original game and upstream tools remain the work of their respective creators. See [third-party notices](THIRD_PARTY_NOTICES.md).
+
 ## Credits and licensing
 
 Original project code is licensed under [BSD-3-Clause](LICENSE). This covers the project’s own work, not the original game or third-party components.
