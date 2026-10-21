@@ -39,6 +39,11 @@ PATCHES = (
     'tools/port-input/rexglue-native-glyph-bc2.patch',
 )
 TARGETS = {'Linux': 'linux-amd64', 'Windows': 'win-amd64'}
+MSVC_REDISTRIBUTABLES = frozenset({
+    'concrt140.dll', 'msvcp140.dll', 'msvcp140_1.dll', 'msvcp140_2.dll',
+    'msvcp140_atomic_wait.dll', 'msvcp140_codecvt_ids.dll',
+    'vcruntime140.dll', 'vcruntime140_1.dll', 'vcruntime140_threads.dll',
+})
 
 
 def patch_file(name):
@@ -223,6 +228,34 @@ def inspect_dependencies(stage, target):
     return result
 
 
+def bundle_windows_crt(stage, redist=None):
+    """Stage imported Release CRTs from the licensed VS redist directory only."""
+    root = Path(redist or os.environ.get('VCToolsRedistDir', ''))
+    copied = {}
+    while True:
+        imports = {name.lower() for info in inspect_dependencies(stage, 'win-amd64').values()
+                   for name in info['needed']}
+        crt = {name for name in imports if name.startswith(('msvcp140', 'vcruntime140', 'concrt140'))}
+        if crt - MSVC_REDISTRIBUTABLES:
+            raise ValueError('Unsupported or non-Release MSVC runtime: ' + ', '.join(sorted(crt - MSVC_REDISTRIBUTABLES)))
+        present = {path.name.lower() for path in stage.iterdir()}
+        missing = crt - present
+        if not missing:
+            return {'publisher': 'Microsoft Corporation', 'version': root.name,
+                    'files': copied} if copied else None
+        if not redist and not os.environ.get('VCToolsRedistDir'):
+            raise ValueError('MSVC runtime staging requires the Visual Studio developer environment (VCToolsRedistDir)')
+        directories = list((root / 'x64').glob('Microsoft.VC*.CRT'))
+        if len(directories) != 1:
+            raise ValueError('Expected one x64 Release CRT directory under VCToolsRedistDir')
+        sources = {path.name.lower(): path for path in directories[0].iterdir() if path.is_file()}
+        for name in sorted(missing):
+            if name not in sources or sources[name].is_symlink():
+                raise ValueError('Imported MSVC runtime missing from approved redist directory: ' + name)
+            shutil.copy2(sources[name], stage / sources[name].name)
+            copied[sources[name].name] = sha(sources[name])
+
+
 def build_port(target, jobs, flatpak=False, sdk_only=False):
     sdk, project, build = prepare(target)
     sdk_recipe = json.loads((sdk.parent / 'sdk-prepared.json').read_text())
@@ -278,6 +311,10 @@ def build_port(target, jobs, flatpak=False, sdk_only=False):
     required = ['rexruntime.dll', 'rexgpu-xenos.dll'] if windows else ['librexruntime.so', 'librexgpu-xenos.so']
     if not all((stage / name).is_file() for name in required):
         raise ValueError('Missing production runtime or GPU plugin')
+    if windows:
+        redistributables = bundle_windows_crt(stage)
+        if redistributables:
+            record['runtime_redistributables'] = redistributables
     record['loader_dependencies'] = inspect_dependencies(stage, target)
     if not windows:
         for info in record['loader_dependencies'].values():
@@ -367,7 +404,7 @@ def package_port(target, output, dry_run=False):
     # private generated guest file lists and source SDK workstation records.
     public_record = {key: record[key] for key in (
         'owner', 'target', 'sdk', 'sdk_inputs_sha256', 'configuration', 'clock',
-        'artifacts') if key in record}
+        'artifacts', 'runtime_redistributables') if key in record}
     public_record.update({'product': PRODUCT, 'version': VERSION, 'channel': 'beta',
                           'backend': 'Vulkan', 'simulation_hz': 30,
                           'loader_dependencies': record.get('loader_dependencies', {})})
@@ -375,6 +412,14 @@ def package_port(target, output, dry_run=False):
     licenses = output / 'licenses'
     licenses.mkdir()
     shutil.copy2(ROOT / 'patches/ReXGlue-LICENSE', licenses / 'ReXGlue-LICENSE')
+    if record.get('runtime_redistributables'):
+        (licenses / 'Microsoft-Visual-C-Runtime-NOTICE.txt').write_text(
+            'Microsoft Visual C++ Runtime Libraries\n'
+            'Copyright (c) Microsoft Corporation. All rights reserved.\n'
+            'Release redistributable files from the licensed Visual Studio installation.\n'
+            'Redistribution information and applicable product license terms:\n'
+            'https://learn.microsoft.com/cpp/windows/redistributing-visual-cpp-files\n'
+            'https://visualstudio.microsoft.com/license-terms/\n', encoding='utf-8')
     # Preserve third-party licenses, including those embedded in SDK dependencies.
     for path in sorted((sdk / 'thirdparty').rglob('*')):
         if path.is_file() and path.name.upper().startswith(('LICENSE', 'COPYING', 'NOTICE')):
