@@ -1,0 +1,61 @@
+diff --git a/include/rex/audio/xma/context.h b/include/rex/audio/xma/context.h
+index 8426798..15d0415 100644
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -242,7 +242,8 @@ class XmaContext {
+   static int16_t GetPacketNumber(size_t size, size_t bit_offset);
+   static uint32_t GetCurrentInputBufferSize(XMA_CONTEXT_DATA* data);
+ 
+-  kPacketInfo GetPacketInfo(uint8_t* packet, uint32_t frame_offset);
++  kPacketInfo GetPacketInfo(uint8_t* packet, uint32_t frame_offset,
++                            bool next_packet_has_continuation);
+   uint32_t GetAmountOfBitsToRead(uint32_t remaining_stream_bits, uint32_t frame_size);
+   const uint8_t* GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_packet_index,
+                                uint32_t current_input_packet_count);
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..ac50e2a 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -345,7 +352,8 @@ memory::RingBuffer XmaContext::PrepareOutputRingBuffer(XMA_CONTEXT_DATA* data) {
+   return output_rb;
+ }
+ 
+-kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
++kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset,
++                                     bool next_packet_has_continuation) {
+   kPacketInfo packet_info = {};
+ 
+   const uint32_t first_frame_offset = xma::GetPacketFrameOffset(packet);
+@@ -359,6 +367,17 @@ kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
+ 
+   while (true) {
+     if (stream.BitsRemaining() < kBitsPerFrameHeader) {
++      // A following packet with continuation bits confirms that these last
++      // bits start another frame, even though its length header is incomplete.
++      // Count it so the preceding frame doesn't skip straight to the next
++      // packet's first *new* frame and discard this split header.
++      if (stream.BitsRemaining() && next_packet_has_continuation) {
++        if (stream.offset_bits() == frame_offset) {
++          packet_info.current_frame_ = packet_info.frame_count_;
++          packet_info.current_frame_size_ = 0;
++        }
++        packet_info.frame_count_++;
++      }
+       break;
+     }
+ 
+@@ -597,9 +616,13 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+     return;
+   }
+ 
+-  kPacketInfo packet_info = GetPacketInfo(packet, relative_offset);
+   const uint32_t packet_to_skip = skip_count + 1;
+   const uint32_t next_packet_index = packet_index + packet_to_skip;
++  const uint8_t* following_packet =
++      GetNextPacket(data, next_packet_index, current_input_packet_count);
++  const bool has_continuation = following_packet &&
++      xma::GetPacketFrameOffset(following_packet) > kBitsPerPacketHeader;
++  kPacketInfo packet_info = GetPacketInfo(packet, relative_offset, has_continuation);
+ 
+   // Frame header split across packet boundary.
+   if (packet_info.current_frame_size_ == 0) {

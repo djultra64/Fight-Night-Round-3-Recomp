@@ -1,0 +1,33 @@
+name: Source checks
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+env:
+  PYTHONDONTWRITEBYTECODE: 1
+permissions:
+  contents: read
+jobs:
+  source:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v6
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.12'
+      - name: Audit public source boundaries
+        run: python tools/release_audit.py .
+      - name: Test installer and packaging without game data
+        run: |
+          python -m unittest discover -s tests -p test_port_installer.py
+          python -m unittest discover -s tests -p test_port_build.py
+      - name: Check original-rate settings and input contracts
+        shell: bash
+        run: |
+          set -eu
+          for name in port_graphics_contract port_native_graphics_contract port_input_contract port_settings_contract port_menu_queue_contract; do
+            g++ -std=c++23 -O2 -DNDEBUG -Isrc "tests/${name}.cpp" -o "/tmp/${name}"
+            "/tmp/${name}"
+          done
+          g++ -std=c++23 -O2 -DNDEBUG -pthread -DFNR3_FRAME_TIMES_NO_GUEST_HOOK -Isrc src/port_frame_times.cpp tests/port_frame_times_contract.cpp -o /tmp/port_frame_times_contract
+          /tmp/port_frame_times_contract /tmp/port-frame-times.jsonl

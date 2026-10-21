@@ -1,0 +1,11 @@
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -529,7 +529,7 @@
+       (key.width_minus_1 != 31 && key.width_minus_1 != 63 && key.width_minus_1 != 127) ||
+       key.height_minus_1 != key.width_minus_1 || !key.tiled ||
+       key.depth_or_array_size_minus_1 || (key.pitch != 1 && key.pitch != 2 && key.pitch != 4) || key.mip_max_level ||
+-      key.scaled_resolve || key.format != xenos::TextureFormat::k_DXT4_5 ||
++      key.scaled_resolve || key.format != xenos::TextureFormat::k_DXT2_3 ||
+       key.base_page > ((0x20000000u - fnr3::port::kGlyphTextureBytes) >> 12)) return;
+   auto found = fnr3_glyph_identities_.find(key.base_page);
+   if (found == fnr3_glyph_identities_.end()) {

@@ -1,0 +1,27 @@
+diff --git a/src/core/memory_posix.cpp b/src/core/memory_posix.cpp
+index b52bf39..67717ad 100644
+--- a/src/core/memory_posix.cpp
++++ b/src/core/memory_posix.cpp
+@@ -483,16 +483,18 @@ FileMappingHandle CreateFileMappingHandle(const std::filesystem::path& path, siz
+     shm_unlink(full_path.c_str());
+     return kFileMappingHandleInvalid;
+   }
++  // All views use the returned descriptor, never reopen the name. Unlink
++  // now so the kernel reclaims storage even if the runtime exits abruptly.
++  shm_unlink(full_path.c_str());
+   return static_cast<FileMappingHandle>(ret);
+ #endif
+ }
+ 
+ void CloseFileMappingHandle(FileMappingHandle handle, const std::filesystem::path& path) {
+   close(static_cast<int>(handle));
+-#if !REX_PLATFORM_ANDROID
+-  auto full_path = MakeShmName(path);
+-  shm_unlink(full_path.c_str());
+-#endif
++  // The POSIX name was removed at creation; closing the final descriptor
++  // and unmapping the views releases the backing storage.
++  (void)path;
+ }
+ 
+ void* MapFileView(FileMappingHandle handle, void* base_address, size_t length, PageAccess access,

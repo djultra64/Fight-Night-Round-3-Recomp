@@ -1,0 +1,33 @@
+{
+  "title": "Fight Night Round 3 (USA)",
+  "platform": "Xbox 360",
+  "title_id": "454107DE",
+  "media_id": "022202E5",
+  "xex_version": "0.0.0.2",
+  "iso": {
+    "path": "Fight Night Round 3 (USA).iso",
+    "size": 7834892288,
+    "sha256": "dc8ae0c22f3b95efc8b54cb5ff04e7682f9dc2785f54ecb6f489af7019dd0623"
+  },
+  "xex": {
+    "path": "assets/default.xex",
+    "size": 8466432,
+    "sha256": "5d583bc4c6a3a13085508a823eff4ebe676a0131ed7f2d5ccf2f14eb0e47332f"
+  },
+  "sdk": {
+    "version": "0.10.0",
+    "commit": "f5337cdc947ff6d4c4196737e2c807a48f2a1fc2",
+    "linux_archive_sha256": "0388edb3f8fb1444f1b0ad5d440cb02d9690ac20a76b04fd6b7dcc19f59328a6",
+    "windows_archive_sha256": "ad4485da853fbe932e9f5dbb643f9b5fe85dc73775ebbad4df6879fe6df0c11b"
+  },
+  "extract_xiso_commit": "3f5b62cfe68f000b0e3c8a30104973f3a297948e",
+  "environment": {
+    "os": "Bazzite 43.20260420.0",
+    "cpu": "AMD Ryzen Z1 Extreme",
+    "machine": "x86_64",
+    "kernel": "6.17.7-ba29.fc43.x86_64",
+    "linux_compiler": "Clang 20.1.8 (Flatpak org.freedesktop.Sdk 25.08)",
+    "gpu": "AMD Ryzen Z1 Extreme (RADV PHOENIX)",
+    "driver": "Mesa 26.0.4"
+  }
+}

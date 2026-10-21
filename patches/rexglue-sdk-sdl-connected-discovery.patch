@@ -1,0 +1,36 @@
+diff --git a/src/input/sdl/sdl_input_driver.cpp b/src/input/sdl/sdl_input_driver.cpp
+index c7c440d..0992782 100644
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -112,6 +112,18 @@ void SDLInputDriver::OnWindowAvailable(rex::ui::Window* window) {
+           }
+         }
+       }
++      // SDL may already have been initialized by the application. Its initial
++      // GAMEPAD_ADDED events can then predate our event watch. Seed the same
++      // pending-event path from the connected-device snapshot as well.
++      int connected_count = 0;
++      SDL_JoystickID* connected = SDL_GetGamepads(&connected_count);
++      for (int i = 0; i < connected_count; ++i) {
++        SDL_Event event{};
++        event.type = SDL_EVENT_GAMEPAD_ADDED;
++        event.gdevice.which = connected[i];
++        HandleEvent(event);
++      }
++      SDL_free(connected);
+       REXLOG_INFO("SDL input driver initialized successfully");
+     });
+   }
+@@ -441,6 +453,12 @@ void SDLInputDriver::ProcessEventLocked(const SDL_Event& event) {
+ }
+ 
+ void SDLInputDriver::OnControllerDeviceAddedLocked(const SDL_Event& event) {
++  // The startup snapshot and an asynchronous add may describe the same pad.
++  for (const auto& existing : controllers_) {
++    if (SDL_GetJoystickID(SDL_GetGamepadJoystick(existing.sdl)) == event.gdevice.which) {
++      return;
++    }
++  }
+   const auto controller = SDL_OpenGamepad(event.gdevice.which);
+   if (!controller) {
+     assert_always();

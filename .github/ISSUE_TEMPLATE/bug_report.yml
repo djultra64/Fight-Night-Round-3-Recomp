@@ -1,0 +1,33 @@
+name: Bug report
+description: Report a reproducible problem in the beta.
+labels: [bug]
+body:
+  - type: markdown
+    attributes:
+      value: Do not attach an ISO, XEX, game assets, saves with personal information, or passwords.
+  - type: input
+    id: version
+    attributes:
+      label: Release version
+      placeholder: v0.7 Beta
+    validations:
+      required: true
+  - type: textarea
+    id: system
+    attributes:
+      label: System and controller
+      description: OS, CPU, GPU, driver, resolution, controller, and relevant port settings.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduce
+    attributes:
+      label: Steps, expected result, and actual result
+      description: Include boxer names and the exact screen when relevant.
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Logs or screenshots
+      description: Review logs for personal paths and identifiers before sharing.

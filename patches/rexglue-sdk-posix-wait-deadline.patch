@@ -1,0 +1,18 @@
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+index 9ac8d15..344fbf2 100644
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -414,9 +414,10 @@ class PosixConditionBase {
+       if (timeout == std::chrono::milliseconds::max()) {
+         std::this_thread::sleep_for(std::chrono::milliseconds(1));
+       } else {
+-        auto remaining = std::chrono::duration_cast<std::chrono::milliseconds>(end_time - now);
+-        auto sleep_time = std::min(remaining, std::chrono::milliseconds(1));
+-        std::this_thread::sleep_for(sleep_time);
++        // Alertable multi-waits use 1 ms slices. Truncating their remaining
++        // sub-millisecond duration to zero turns every slice into a busy loop.
++        // Keep the steady-clock deadline precise and retain the polling bound.
++        std::this_thread::sleep_until(std::min(end_time, now + std::chrono::milliseconds(1)));
+       }
+     }
+   }

@@ -1,0 +1,30 @@
+--- a/src/input/sdl/sdl_input_driver.cpp
++++ b/src/input/sdl/sdl_input_driver.cpp
+@@ -22,6 +22,27 @@
+ 
+ REXCVAR_DEFINE_STRING(hid_mappings_file, "gamecontrollerdb.txt", "Input",
+                       "Path to SDL gamecontroller mappings file");
++
++// FNR3 single-instance observer forwarding ABI. Project work: djultra64.
++// Windows does not export static SDL's symbols from rexruntime.dll. Keep the
++// callback, allocator and device query in the SAME SDL instance as the driver.
++#if defined(_WIN32)
++extern "C" __declspec(dllexport) bool Fnr3SDLAddEventWatch(SDL_EventFilter filter, void* context) {
++  return SDL_AddEventWatch(filter, context);
++}
++extern "C" __declspec(dllexport) void Fnr3SDLRemoveEventWatch(SDL_EventFilter filter, void* context) {
++  SDL_RemoveEventWatch(filter, context);
++}
++extern "C" __declspec(dllexport) SDL_JoystickID* Fnr3SDLGetGamepads(int* count) {
++  return SDL_GetGamepads(count);
++}
++extern "C" __declspec(dllexport) SDL_GamepadType Fnr3SDLGetGamepadTypeForID(SDL_JoystickID id) {
++  return SDL_GetGamepadTypeForID(id);
++}
++extern "C" __declspec(dllexport) void Fnr3SDLFree(void* pointer) {
++  SDL_free(pointer);
++}
++#endif
+ 
+ namespace rex::input::sdl {
+ 

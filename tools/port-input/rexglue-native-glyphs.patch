@@ -1,0 +1,174 @@
+--- a/include/rex/graphics/pipeline/texture/cache.h
++++ b/include/rex/graphics/pipeline/texture/cache.h
+@@ -478,6 +478,13 @@
+   const RegisterFile& register_file() const { return register_file_; }
+   SharedMemory& shared_memory() const { return shared_memory_; }
+ 
++  // FNR3: bounded exact-source native glyph aliases, no renderer replacement.
++  void ApplyFNR3GlyphKey(TextureKey& key);
++  std::unordered_map<uint32_t, int32_t> fnr3_glyph_identities_;
++  uint64_t fnr3_glyph_controls_ = UINT64_MAX;
++  uint32_t fnr3_glyph_family_ = UINT32_MAX;
++
++
+   // May be called for purposes like clearing the cache, as well as in the
+   // destructor of the implementation if textures, for instance, have references
+   // to the implementation that are used in their destructor, and will become
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -10,6 +10,12 @@
+  */
+ 
+ #include <algorithm>
++#include <rex/graphics/fnr3_input_glyph_bridge.h>
++#if defined(_WIN32)
++#include <windows.h>
++#else
++#include <dlfcn.h>
++#endif
+ #include <cstdint>
+ #include <utility>
+ 
+@@ -25,6 +31,8 @@
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
++
++REXCVAR_DEFINE_UINT32(fnr3_native_glyph_abi, 1, "Port/Capabilities", "Native glyph cache bridge ABI").lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+ REXCVAR_DEFINE_INT32(texture_cache_memory_limit_render_to_texture, 24, "GPU",
+                      "Texture cache memory limit for render-to-texture (MB)")
+@@ -250,6 +258,7 @@
+ }
+ 
+ void TextureCache::ClearCache() {
++  fnr3_glyph_identities_.clear();
+   DestroyAllTextures();
+ }
+ 
+@@ -450,10 +459,68 @@
+   return true;
+ }
+ 
++namespace {
++fnr3::port::NativeGlyphBridge* FNR3GlyphBridge() {
++  using Getter = fnr3::port::NativeGlyphBridge* (*)();
++  // Host export exists before the plugin is loaded. Resolve the function once;
++  // its result may remain null until guest memory/immutable assets are ready.
++  static const Getter getter = []() -> Getter {
++#if defined(_WIN32)
++    return reinterpret_cast<Getter>(GetProcAddress(GetModuleHandleW(nullptr), "Fnr3GetInputGlyphBridge"));
++#else
++    return reinterpret_cast<Getter>(dlsym(RTLD_DEFAULT, "Fnr3GetInputGlyphBridge"));
++#endif
++  }();
++  auto* bridge = getter ? getter() : nullptr;
++  return bridge && bridge->version == fnr3::port::kGlyphBridgeVersion ? bridge : nullptr;
++}
++}
++void TextureCache::ApplyFNR3GlyphKey(TextureKey& key) {
++  auto* bridge = FNR3GlyphBridge();
++  if (!bridge || !key.is_valid || key.dimension != xenos::DataDimension::k2DOrStacked ||
++      (key.width_minus_1 != 31 && key.width_minus_1 != 63 && key.width_minus_1 != 127) ||
++      key.height_minus_1 != key.width_minus_1 || !key.tiled ||
++      key.depth_or_array_size_minus_1 || (key.pitch != 1 && key.pitch != 2 && key.pitch != 4) || key.mip_max_level ||
++      key.scaled_resolve || key.format != xenos::TextureFormat::k_DXT4_5 ||
++      key.base_page > ((0x20000000u - fnr3::port::kGlyphTextureBytes) >> 12)) return;
++  auto found = fnr3_glyph_identities_.find(key.base_page);
++  if (found == fnr3_glyph_identities_.end()) {
++    const auto* bytes = shared_memory().memory().TranslatePhysical(key.base_page << 12);
++    const uint64_t hash = fnr3::port::GlyphHash(bytes);
++    int32_t identity = -1;
++    for (uint32_t i = 0; i < bridge->count; ++i) {
++      const auto& candidate = bridge->records[i];
++      if (hash == candidate.hash && !std::memcmp(bytes, candidate.original, fnr3::port::kGlyphTextureBytes)) {
++        identity = int32_t(i); bridge->matches.fetch_add(1, std::memory_order_relaxed); break;
++      }
++    }
++    found = fnr3_glyph_identities_.emplace(uint32_t(key.base_page), identity).first;
++  }
++  if (found->second < 0) return;
++  const auto& record = bridge->records[found->second];
++  const uint64_t controls = bridge->controls.load(std::memory_order_acquire);
++  const uint32_t family = uint32_t(controls >> 56);
++  const uint32_t physical = record.action >= 0 ? uint32_t((controls >> (record.action * 4)) & 15) : 0;
++  if (family >= 3 || physical >= fnr3::port::kGlyphPhysicalCount) return;
++  const uint32_t page = record.pages[family][physical];
++  if (page && page <= ((0x20000000u - fnr3::port::kGlyphTextureBytes) >> 12)) key.base_page = page;
++}
++
+ void TextureCache::RequestTextures(uint32_t used_texture_mask) {
++  if (auto* bridge = FNR3GlyphBridge()) {
++    const auto controls = bridge->controls.load(std::memory_order_acquire);
++    const auto family = uint32_t(controls >> 56);
++    if (controls != fnr3_glyph_controls_ || family != fnr3_glyph_family_) {
++      if (fnr3_glyph_controls_ != UINT64_MAX) bridge->switches.fetch_add(1, std::memory_order_relaxed);
++      fnr3_glyph_controls_ = controls; fnr3_glyph_family_ = family;
++      ResetTextureBindings();
++    }
++  }
++
+   const auto& regs = register_file();
+ 
+   if (texture_became_outdated_.exchange(false, std::memory_order_acquire)) {
++    fnr3_glyph_identities_.clear();
+     // A texture has become outdated - make sure whether textures are outdated
+     // is rechecked in this draw and in subsequent ones to reload the new data
+     // if needed.
+@@ -494,6 +561,12 @@
+     TextureKey old_key = binding.key;
+     uint8_t old_swizzled_signs = binding.swizzled_signs;
+     BindingInfoFromFetchConstant(fetch, binding.key, &binding.swizzled_signs);
++    const TextureKey fnr3_original_key = binding.key;
++    ApplyFNR3GlyphKey(binding.key);
++    if (binding.key != fnr3_original_key) {
++      // Keep original source watched: guest page reuse must reclassify it.
++      queue_pending_texture_load(FindOrCreateTexture(fnr3_original_key));
++    }
+     texture_bindings_in_sync_ |= index_bit;
+     if (!binding.key.is_valid) {
+       if (old_key.is_valid) {
+--- a/include/rex/graphics/shared_memory.h
++++ b/include/rex/graphics/shared_memory.h
+@@ -24,6 +24,7 @@
+ // buffers that can be accessed from shaders with Xenon physical addresses, with
+ // system page size granularity.
+ class SharedMemory {
++  friend class TextureCache; // Bounded native glyph source classification.
+  public:
+   static constexpr uint32_t kBufferSizeLog2 = 29;
+   static constexpr uint32_t kBufferSize = 1 << kBufferSizeLog2;
+--- /dev/null
++++ b/include/rex/graphics/fnr3_input_glyph_bridge.h
+@@ -0,0 +1,31 @@
++// Private versioned host/GPU plugin ABI. Project work: djultra64.
++#pragma once
++#include <atomic>
++#include <cstdint>
++namespace fnr3::port {
++inline constexpr uint32_t kGlyphBridgeVersion=1,kGlyphTextureBytes=16384,kGlyphPhysicalCount=14;
++struct NativeGlyphRecord {
++  const uint8_t* original; // Immutable, process lifetime; exact tiled bytes.
++  uint64_t hash; // FNV-1a-64, followed by full memcmp before classification.
++  int32_t action; // 0..13 guest action; -1 means non-remappable trigger.
++  uint32_t pages[3][kGlyphPhysicalCount]; // Xbox, PlayStation, Switch; physical4Kpages.
++};
++struct NativeGlyphBridge {
++  uint32_t version=kGlyphBridgeVersion,count=0;
++  const NativeGlyphRecord* records=nullptr;
++  std::atomic<uint64_t> controls{0}; // 14 physical indexes, packed4bits each; family atbit56.
++  std::atomic<uint64_t> matches{0},switches{0}; // GPU integration evidence.
++};
++inline uint64_t GlyphHash(const uint8_t* p) {
++  uint64_t h=14695981039346656037ull;
++  for(unsigned i=0;i<kGlyphTextureBytes;++i){h^=p[i];h*=1099511628211ull;}return h;
++}
++}
++#if defined(_WIN32)
++#define FNR3_GLYPH_EXPORT __declspec(dllexport)
++#else
++#define FNR3_GLYPH_EXPORT __attribute__((visibility("default")))
++#endif
++#if defined(FNR3_GLYPH_BRIDGE_HOST)
++extern "C" FNR3_GLYPH_EXPORT fnr3::port::NativeGlyphBridge* Fnr3GetInputGlyphBridge();
++#endif

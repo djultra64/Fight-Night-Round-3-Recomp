@@ -1,0 +1,75 @@
+diff --git a/src/audio/audio_system.cpp b/src/audio/audio_system.cpp
+index 7a711a8..7d5623d 100644
+--- a/src/audio/audio_system.cpp
++++ b/src/audio/audio_system.cpp
+@@ -13,6 +13,7 @@
+ #include <rex/audio/audio_driver.h>
+ #include <rex/audio/audio_system.h>
+ #include <rex/audio/flags.h>
++#include <rex/audio/frame_pacer.h>
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/dbg.h>
+ #include <rex/logging.h>
+@@ -28,6 +29,9 @@ REXCVAR_DEFINE_INT32(
+     audio_maxqframes, 8, "Audio",
+     "Max buffered audio frames (range 4-64). Lower reduces latency but may cause stuttering.");
+ 
++REXCVAR_DEFINE_BOOL(fnr3_audio_frame_pacing, false, "Audio",
++    "Request FNR3 mixed audio frames at the 256-sample/48kHz clock instead of device bursts");
++
+ // As with normal Microsoft, there are like twelve different ways to access
+ // the audio APIs. Early games use XMA*() methods almost exclusively to touch
+ // decoders. Later games use XAudio*() and direct memory writes to the XMA
+@@ -99,6 +103,10 @@ X_STATUS AudioSystem::Setup(system::KernelState* kernel_state) {
+ void AudioSystem::WorkerThreadMain() {
+   // Initialize driver and ringbuffer.
+   Initialize();
++  FramePacer frame_pacers[kMaximumClientCount];
++  if (REXCVAR_GET(fnr3_audio_frame_pacing)) {
++    REXAPU_INFO("FNR3 audio: sample-clock pacing enabled (256 samples at 48 kHz)");
++  }
+ 
+   // Main run loop.
+   uint32_t diag_pump_count = 0;
+@@ -140,6 +148,9 @@ void AudioSystem::WorkerThreadMain() {
+       global_lock.unlock();
+ 
+       if (client_callback) {
++        if (REXCVAR_GET(fnr3_audio_frame_pacing)) {
++          std::this_thread::sleep_until(frame_pacers[index].Schedule(FramePacer::Clock::now()));
++        }
+         if (diag_pump_count < 10) {
+           REXAPU_DEBUG("AudioWorker: dispatching callback {:08X} with arg {:08X} for client {}",
+                        client_callback, client_callback_arg, index);
+diff --git a/include/rex/audio/frame_pacer.h b/include/rex/audio/frame_pacer.h
+new file mode 100644
+--- /dev/null
++++ b/include/rex/audio/frame_pacer.h
+@@ -0,0 +1,27 @@
++// Audio sample-clock pacing for FNR3. Project integration: djultra64.
++#pragma once
++#include <algorithm>
++#include <chrono>
++#include <cstdint>
++
++namespace rex::audio {
++class FramePacer {
++ public:
++  using Clock=std::chrono::steady_clock;
++  Clock::time_point Schedule(Clock::time_point now) {
++    constexpr auto interval=std::chrono::nanoseconds(UINT64_C(1000000000)*256/48000);
++    // A short startup cushion covers the device's four-frame callback quantum.
++    if (priming_) {
++      --priming_;
++      next_=now+interval;
++      return now;
++    }
++    const auto due=std::max(now,next_);
++    next_=due+interval;
++    return due;
++  }
++ private:
++  uint32_t priming_=4;
++  Clock::time_point next_{};
++};
++}  // namespace rex::audio

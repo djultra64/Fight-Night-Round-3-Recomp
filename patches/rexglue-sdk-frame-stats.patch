@@ -1,0 +1,45 @@
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -13,6 +13,8 @@
+ #include <cinttypes>
+ #include <cmath>
+ #include <cstring>
++#include <chrono>
++#include <cstdlib>
+ #include <string_view>
+ 
+ #include <fmt/format.h>
+@@ -962,6 +964,33 @@
+ 
+   IssueSwap(frontbuffer_ptr, frontbuffer_width, frontbuffer_height);
+ 
++  // Optional test telemetry: count guest swaps, never host UI presentations.
++  static const bool fnr3_frame_stats = std::getenv("FNR3_FRAME_STATS") != nullptr;
++  if (fnr3_frame_stats) {
++    using Clock = std::chrono::steady_clock;
++    static Clock::time_point previous{};
++    static Clock::time_point start{};
++    static uint32_t frames = 0;
++    static double maximum_ms = 0.0;
++    const auto now = Clock::now();
++    if (previous == Clock::time_point{}) {
++      previous = start = now;
++    } else {
++      const double delta_ms = std::chrono::duration<double, std::milli>(now - previous).count();
++      maximum_ms = std::max(maximum_ms, delta_ms);
++      previous = now;
++      ++frames;
++      const double seconds = std::chrono::duration<double>(now - start).count();
++      if (seconds >= 2.0) {
++        REXGPU_INFO("FNR3_GUEST_FPS frames={} seconds={:.3f} fps={:.2f} mean_ms={:.2f} max_ms={:.2f}",
++                    frames, seconds, frames / seconds, seconds * 1000.0 / frames, maximum_ms);
++        frames = 0;
++        maximum_ms = 0.0;
++        start = now;
++      }
++    }
++  }
++
+   ++counter_;
+   return true;
+ }

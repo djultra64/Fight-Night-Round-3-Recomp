@@ -1,0 +1,64 @@
+# default.xex SHA-256: 5d583bc4c6a3a13085508a823eff4ebe676a0131ed7f2d5ccf2f14eb0e47332f
+# Confirmed save/restore of the PPC jump buffer. Emit host non-local jumps
+# instead of returning through C++ frames after restoring only guest registers.
+setjmp_address = 0x826FE6D0
+longjmp_address = 0x826FE5B0
+
+# Leaf function missed by automatic discovery. Disassembly confirms a complete
+# 7-instruction body ending at blr (0x8246DFD8), followed by zero padding.
+# Called by a tail branch at 0x8246E41C. See docs/beta/building.md.
+[functions]
+0x8246DFC0 = { size = 0x1C }
+# Indirect CRT initializer at table slot 0x82780030. Five instructions ending
+# in a tail call at 0x82762870, then zero padding. Observed runtime trap.
+0x82762860 = { size = 0x14 }
+# Runtime indirect callback; twelve instructions, ending in bctr. The caller
+# builds this address dynamically, so no literal pointer appears in the image.
+0x82359948 = { size = 0x30 }
+# Adjacent nine-instruction wrapper, observed as the next runtime callback.
+0x82359978 = { size = 0x24 }
+# Six-instruction reset callback installed by sub_82580740 at guest 0x82580780.
+0x82580728 = { size = 0x18 }
+# Five-instruction counter callback observed at runtime; blr at 0x824DCA60.
+0x824DCA50 = { size = 0x14 }
+# Six-instruction object adjustment callback; blr at 0x824D77EC.
+0x824D77D8 = { size = 0x18 }
+# Adjacent independent two-instruction this-adjustment thunks. Each adjusts
+# r3 by -16 and tail-calls the original method; 0x824D77C0 trapped at runtime.
+0x824D77B0 = { size = 0x08 }
+0x824D77B8 = { size = 0x08 }
+0x824D77C0 = { size = 0x08 }
+0x824D77C8 = { size = 0x08 }
+0x824D77D0 = { size = 0x08 }
+# Six-instruction virtual method wrapper; bctr at 0x8212AD0C.
+0x8212ACF8 = { size = 0x18 }
+# Four-instruction virtual callback, method offset 440; bctr at 0x8215148C.
+0x82151480 = { size = 0x10 }
+# Combat approach callback observed at runtime on 2026-10-20. Seven instructions
+# swap object arguments and tail-dispatch vtable method +136; bctr at 0x82124D98.
+0x82124D80 = { size = 0x1C }
+# Previously observed combat callback. Nineteen instructions with two tail
+# dispatch paths; final bctr at 0x82151600, followed by zero padding.
+0x821515B8 = { size = 0x4C }
+# Same combat event-dispatch cluster, independently bounded by tail bctr.
+# 0x82151648 trapped after the first two registrations; 0x82151490 is the
+# remaining adjacent omitted event callback. Each has a conditional bnelr.
+0x82151648 = { size = 0x3C }
+0x82151490 = { size = 0x30 }
+# Runtime trap with another boxer matchup on 2026-10-20. Two-instruction
+# floating-point getter: lfs f1,8(r3); blr at 0x8212B40C. Adjacent getter
+# 0x8212B410 is already discovered. Preserve original behavior.
+0x8212B408 = { size = 0x08 }
+# Jones Jr. vs Holyfield loading trap on 2026-10-20 at 0x82352D08.
+# Six complete four-instruction virtual dispatch thunks, vtable offsets
+# 44..64. All have original image table references (including 0x820B3DB8
+# through 0x820B3DCC); preceding +40 thunk 0x82352CF8 is already discovered.
+0x82352D08 = { size = 0x10 }
+0x82352D18 = { size = 0x10 }
+0x82352D28 = { size = 0x10 }
+0x82352D38 = { size = 0x10 }
+0x82352D48 = { size = 0x10 }
+0x82352D58 = { size = 0x10 }
+# Independent runtime trap during 30 FPS control on 2026-10-20. Ten original
+# instructions reset object state and tail-call 0x82137D28 at 0x8213EE04.
+0x8213EDE0 = { size = 0x28 }

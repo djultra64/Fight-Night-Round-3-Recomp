@@ -1,0 +1,85 @@
+diff --git a/src/kernel/xam/apps/xmp_app.cpp b/src/kernel/xam/apps/xmp_app.cpp
+index a5e9088..237ffc6 100644
+--- a/src/kernel/xam/apps/xmp_app.cpp
++++ b/src/kernel/xam/apps/xmp_app.cpp
+@@ -11,9 +11,55 @@
+ 
+ #include <rex/kernel/xam/apps/xmp_app.h>
+ #include <rex/logging.h>
++#include <rex/cvar.h>
++#include <chrono>
+ #include <rex/system/xthread.h>
+ #include <rex/thread.h>
+ 
++REXCVAR_DEFINE_BOOL(fnr3_xmp_no_delay, false, "FNR3/Performance",
++                    "Replace artificial XMP worker delays with a scheduler yield")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++REXCVAR_DEFINE_BOOL(fnr3_xmp_trace, false, "FNR3/Diagnostics",
++                    "Count XMP polling calls and delay time per host thread");
++
++namespace {
++// Project integration by djultra64. This changes only the SDK's throttle,
++// never an event, fence, response value or game audio-bank wait.
++// FNR3_XMP_DELAY_BEGIN
++void Fnr3XmpDelay(bool main_thread, uint32_t delay_ms) {
++  const bool skip = REXCVAR_GET(fnr3_xmp_no_delay);
++  const bool trace = REXCVAR_GET(fnr3_xmp_trace);
++  auto apply = [&] {
++    if (!main_thread) {
++      if (skip) rex::thread::MaybeYield();
++      else rex::thread::Sleep(std::chrono::milliseconds(delay_ms));
++    }
++  };
++  if (!trace) { apply(); return; }
++  struct Counts {
++    uint64_t calls = 0, worker_calls = 0, status = 0, controller = 0;
++    double delay_us = 0;
++    std::chrono::steady_clock::time_point since = std::chrono::steady_clock::now();
++  };
++  thread_local Counts count;
++  auto began = std::chrono::steady_clock::now();
++  apply();
++  auto now = std::chrono::steady_clock::now();
++  ++count.calls;
++  count.worker_calls += !main_thread;
++  count.status += delay_ms == 1;
++  count.controller += delay_ms == 10;
++  count.delay_us += std::chrono::duration<double, std::micro>(now - began).count();
++  const double seconds = std::chrono::duration<double>(now - count.since).count();
++  if (count.calls == 1 || seconds >= 2.0) {
++    REXKRNL_INFO("FNR3_XMP calls={} worker={} status={} controller={} seconds={:.3f} delay_ms={:.3f} no_delay={}",
++        count.calls, count.worker_calls, count.status, count.controller, seconds, count.delay_us / 1000.0, skip);
++    if (seconds >= 2.0) count = Counts{};
++  }
++}
++// FNR3_XMP_DELAY_END
++}  // namespace
++
+ namespace rex {
+ namespace kernel {
+ namespace xam {
+@@ -36,11 +82,7 @@ XmpApp::XmpApp(KernelState* kernel_state)
+       next_song_handle_(1) {}
+ 
+ X_HRESULT XmpApp::XMPGetStatus(uint32_t state_ptr) {
+-  if (!XThread::GetCurrentThread()->main_thread()) {
+-    // Some stupid games will hammer this on a thread - induce a delay
+-    // here to keep from starving real threads.
+-    rex::thread::Sleep(std::chrono::milliseconds(1));
+-  }
++  Fnr3XmpDelay(XThread::GetCurrentThread()->main_thread(), 1);
+ 
+   REXKRNL_TRACE("XMPGetStatus({:08X})", state_ptr);
+   memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(state_ptr),
+@@ -408,10 +450,7 @@ X_HRESULT XmpApp::DispatchMessageSync(uint32_t message, uint32_t buffer_ptr,
+       memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->controller_ptr), 0);
+       memory::store_and_swap<uint32_t>(memory_->TranslateVirtual(args->locked_ptr), 0);
+ 
+-      if (!XThread::GetCurrentThread()->main_thread()) {
+-        // Atrain spawns a thread 82437FD0 to call this in a tight loop forever.
+-        rex::thread::Sleep(std::chrono::milliseconds(10));
+-      }
++      Fnr3XmpDelay(XThread::GetCurrentThread()->main_thread(), 10);
+ 
+       return X_E_SUCCESS;
+     }

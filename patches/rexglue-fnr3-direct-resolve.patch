@@ -1,0 +1,1036 @@
+diff --git a/include/rex/graphics/vulkan/render_target_cache.h b/include/rex/graphics/vulkan/render_target_cache.h
+index 34f7033..ae95ce5 100644
+--- a/include/rex/graphics/vulkan/render_target_cache.h
++++ b/include/rex/graphics/vulkan/render_target_cache.h
+@@ -754,11 +754,11 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+   };
+ 
+   struct DirectResolvePushConstants {
+-    draw_util::ResolveCopyShaderConstants resolve;
+-    uint32_t source_base_tiles;
+-    uint32_t source_pitch_tiles;
+-    uint32_t dispatch_first_tile;
++    uint32_t source_x, source_y, width, height;
++    uint32_t dest_x, dest_y, dest_pitch, endian;
++    uint32_t swap_rb, sample_first, sample_second, average_samples;
+   };
++  static_assert(sizeof(DirectResolvePushConstants) == 48);
+ 
+   struct DirectResolvePipelineKey {
+     DumpPipelineKey dump_pipeline_key;
+@@ -804,7 +804,8 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+   VkPipeline GetDirectResolvePipeline(DirectResolvePipelineKey key);
+   bool TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,
+                               draw_util::ResolveCopyShaderIndex copy_shader,
+-                              bool draw_resolution_scaled);
++                              bool draw_resolution_scaled,
++                              VulkanSharedMemory& shared_memory);
+ 
+   // Writes contents of host render targets within rectangles from
+   // ResolveInfo::GetCopyEdramTileSpan to edram_buffer_.
+@@ -870,6 +871,9 @@ class VulkanRenderTargetCache final : public RenderTargetCache {
+   uint64_t direct_resolve_attempt_count_ = 0;
+   uint64_t direct_resolve_success_count_ = 0;
+   uint64_t direct_resolve_fallback_count_ = 0;
++  uint64_t direct_resolve_pixels_ = 0;
++  uint64_t direct_resolve_output_range_bytes_ = 0;
++  uint64_t direct_resolve_stats_next_ns_ = 0;
+ 
+   // For pixel (fragment) shader interlock.
+ 
+diff --git a/src/graphics/vulkan/render_target_cache.cpp b/src/graphics/vulkan/render_target_cache.cpp
+index 0298f06..fffef37 100644
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -13,6 +13,7 @@
+ #include <array>
+ #include <cstddef>
+ #include <cstdint>
++#include <chrono>
+ #include <cstring>
+ #include <memory>
+ #include <tuple>
+@@ -24,6 +25,8 @@
+ #include <rex/assert.h>
+ #include <rex/cvar.h>
+ #include <rex/graphics/flags.h>
++#include <rex/graphics/vulkan/fnr3_direct_resolve_spirv.h>
++#include <rex/graphics/pipeline/texture/util.h>
+ #include <rex/graphics/pipeline/shader/spirv_builder.h>
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+ #include <rex/graphics/pipeline/texture/cache.h>
+@@ -37,6 +40,14 @@
+ #include <rex/math.h>
+ #include <rex/ui/vulkan/util.h>
+ 
++REXCVAR_DEFINE_BOOL(fnr3_direct_resolve, false, "GPU/Vulkan",
++    "FNR3 experimental direct RGBA8 host-image resolve (unsupported cases retain the normal path)")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++REXCVAR_DEFINE_BOOL(fnr3_direct_resolve_stats, false, "GPU/Vulkan",
++    "Report cumulative FNR3 direct resolve acceptance and work every two seconds")
++    .lifecycle(rex::cvar::Lifecycle::kHotReload);
++
+ REXCVAR_DEFINE_STRING(render_target_path_vulkan, "", "GPU/Vulkan",
+                       "Vulkan render target implementation path")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+@@ -1122,6 +1133,18 @@ void VulkanRenderTargetCache::EndSubmission() {
+   if (transfer_vertex_buffer_pool_) {
+     transfer_vertex_buffer_pool_->FlushWrites();
+   }
++  if (REXCVAR_GET(fnr3_direct_resolve_stats) && direct_resolve_attempt_count_) {
++    const uint64_t now = uint64_t(std::chrono::duration_cast<std::chrono::nanoseconds>(
++        std::chrono::steady_clock::now().time_since_epoch()).count());
++    if (now >= direct_resolve_stats_next_ns_) {
++      direct_resolve_stats_next_ns_ = now + 2000000000ull;
++      REXGPU_INFO("FNR3 direct resolve cumulative: attempts={} direct={} fallback={} "
++                  "pixels={} output_range_bytes={} avoided_dump_sequences={}",
++                  direct_resolve_attempt_count_,direct_resolve_success_count_,
++                  direct_resolve_fallback_count_,direct_resolve_pixels_,
++                  direct_resolve_output_range_bytes_,direct_resolve_success_count_);
++    }
++  }
+ }
+ 
+ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+@@ -1164,9 +1187,9 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+           draw_util::resolve_copy_shader_info[size_t(copy_shader)];
+       bool direct_resolved = false;
+       if (GetPath() == Path::kHostRenderTargets) {
+-        if (REXCVAR_GET(direct_host_resolve)) {
++        if (REXCVAR_GET(fnr3_direct_resolve)) {
+           direct_resolved =
+-              TryResolveCopyDirectly(resolve_info, copy_shader, draw_resolution_scaled);
++              TryResolveCopyDirectly(resolve_info, copy_shader, draw_resolution_scaled, shared_memory);
+           if (direct_resolved) {
+             ++direct_resolve_success_count_;
+           } else {
+@@ -1188,109 +1211,119 @@ bool VulkanRenderTargetCache::Resolve(const memory::Memory& memory,
+         }
+       }
+ 
+-      uint32_t copy_dest_range_unscaled = resolve_info.copy_dest_extent_start -
+-                                          resolve_info.copy_dest_base +
+-                                          resolve_info.copy_dest_extent_length;
+-      uint64_t copy_dest_base = resolve_info.copy_dest_base;
+-      uint64_t copy_dest_range_length = copy_dest_range_unscaled;
+-      uint64_t copy_dest_use_start = resolve_info.copy_dest_extent_start;
+-      uint64_t copy_dest_use_length = resolve_info.copy_dest_extent_length;
+-      if (draw_resolution_scaled) {
+-        if (!texture_cache.GetScaledResolveRange(
+-                resolve_info.copy_dest_base, copy_dest_range_unscaled,
+-                copy_shader_info.dest_bpe_log2, copy_dest_base, copy_dest_range_length) ||
+-            !texture_cache.GetScaledResolveRange(
+-                resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length,
+-                copy_shader_info.dest_bpe_log2, copy_dest_use_start, copy_dest_use_length)) {
+-          REXGPU_ERROR(
+-              "VulkanRenderTargetCache: Failed to map scaled resolve "
+-              "destination range (base={:08X}, length={:08X})",
+-              resolve_info.copy_dest_base, copy_dest_range_unscaled);
+-          return false;
+-        }
+-      }
+-
+-      // Make sure there is memory to write to.
+-      bool copy_dest_committed;
+-      if (draw_resolution_scaled) {
+-        copy_dest_committed = texture_cache.CommitScaledResolveRange(
+-            resolve_info.copy_dest_base, copy_dest_range_unscaled, copy_shader_info.dest_bpe_log2);
+-      } else {
+-        copy_dest_committed = shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
+-                                                         resolve_info.copy_dest_extent_length);
+-      }
+-      if (!copy_dest_committed) {
+-        REXGPU_ERROR(
+-            "VulkanRenderTargetCache: Failed to obtain the resolve destination "
+-            "memory region");
++      if (direct_resolved) {
++        // The direct shader already wrote shared memory. Do NOT run the
++        // EDRAM-source resolve shader over it; EDRAM was deliberately not dumped.
++        texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
++                                          resolve_info.copy_dest_extent_length);
++        written_address_out = resolve_info.copy_dest_extent_start;
++        written_length_out = resolve_info.copy_dest_extent_length;
++        copied = true;
+       } else {
+-        // TODO(Triang3l): Switching between descriptors if exceeding
+-        // maxStorageBufferRange.
+-        // TODO(Triang3l): Use a single 512 MB shared memory binding if
+-        // possible.
+-        VkDescriptorSet descriptor_set_dest = command_processor_.AllocateSingleTransientDescriptor(
+-            VulkanCommandProcessor::SingleTransientDescriptorLayout ::kStorageBufferCompute);
+-        if (descriptor_set_dest != VK_NULL_HANDLE) {
+-          // Write the destination descriptor.
+-          VkDescriptorBufferInfo write_descriptor_set_dest_buffer_info;
+-          write_descriptor_set_dest_buffer_info.buffer = draw_resolution_scaled
+-                                                             ? texture_cache.scaled_resolve_buffer()
+-                                                             : shared_memory.buffer();
+-          write_descriptor_set_dest_buffer_info.offset = copy_dest_base;
+-          write_descriptor_set_dest_buffer_info.range = copy_dest_range_length;
+-          VkWriteDescriptorSet write_descriptor_set_dest;
+-          write_descriptor_set_dest.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
+-          write_descriptor_set_dest.pNext = nullptr;
+-          write_descriptor_set_dest.dstSet = descriptor_set_dest;
+-          write_descriptor_set_dest.dstBinding = 0;
+-          write_descriptor_set_dest.dstArrayElement = 0;
+-          write_descriptor_set_dest.descriptorCount = 1;
+-          write_descriptor_set_dest.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
+-          write_descriptor_set_dest.pImageInfo = nullptr;
+-          write_descriptor_set_dest.pBufferInfo = &write_descriptor_set_dest_buffer_info;
+-          write_descriptor_set_dest.pTexelBufferView = nullptr;
+-          dfn.vkUpdateDescriptorSets(device, 1, &write_descriptor_set_dest, 0, nullptr);
+-
+-          // Submit the resolve.
+-          if (draw_resolution_scaled) {
+-            texture_cache.UseScaledResolveBufferForWrite(copy_dest_use_start, copy_dest_use_length);
+-          } else {
+-            shared_memory.Use(VulkanSharedMemory::Usage::kComputeWrite,
+-                              std::pair<uint32_t, uint32_t>(uint32_t(copy_dest_use_start),
+-                                                            uint32_t(copy_dest_use_length)));
++        uint32_t copy_dest_range_unscaled = resolve_info.copy_dest_extent_start -
++                                            resolve_info.copy_dest_base +
++                                            resolve_info.copy_dest_extent_length;
++        uint64_t copy_dest_base = resolve_info.copy_dest_base;
++        uint64_t copy_dest_range_length = copy_dest_range_unscaled;
++        uint64_t copy_dest_use_start = resolve_info.copy_dest_extent_start;
++        uint64_t copy_dest_use_length = resolve_info.copy_dest_extent_length;
++        if (draw_resolution_scaled) {
++          if (!texture_cache.GetScaledResolveRange(
++                  resolve_info.copy_dest_base, copy_dest_range_unscaled,
++                  copy_shader_info.dest_bpe_log2, copy_dest_base, copy_dest_range_length) ||
++              !texture_cache.GetScaledResolveRange(
++                  resolve_info.copy_dest_extent_start, resolve_info.copy_dest_extent_length,
++                  copy_shader_info.dest_bpe_log2, copy_dest_use_start, copy_dest_use_length)) {
++            REXGPU_ERROR(
++                "VulkanRenderTargetCache: Failed to map scaled resolve "
++                "destination range (base={:08X}, length={:08X})",
++                resolve_info.copy_dest_base, copy_dest_range_unscaled);
++            return false;
+           }
+-          UseEdramBuffer(EdramBufferUsage::kComputeRead);
+-          command_processor_.BindExternalComputePipeline(
+-              resolve_copy_pipelines_[size_t(copy_shader)]);
+-          VkDescriptorSet descriptor_sets[kResolveCopyDescriptorSetCount] = {};
+-          descriptor_sets[kResolveCopyDescriptorSetEdram] = edram_storage_buffer_descriptor_set_;
+-          descriptor_sets[kResolveCopyDescriptorSetDest] = descriptor_set_dest;
+-          command_buffer.CmdVkBindDescriptorSets(
+-              VK_PIPELINE_BIND_POINT_COMPUTE, resolve_copy_pipeline_layout_, 0,
+-              uint32_t(rex::countof(descriptor_sets)), descriptor_sets, 0, nullptr);
+-          if (draw_resolution_scaled) {
+-            command_buffer.CmdVkPushConstants(
+-                resolve_copy_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+-                sizeof(copy_shader_constants.dest_relative), &copy_shader_constants.dest_relative);
+-          } else {
+-            // TODO(Triang3l): Proper dest_base in case of one 512 MB shared
+-            // memory binding, or multiple shared memory bindings in case of
+-            // splitting due to maxStorageBufferRange overflow.
+-            copy_shader_constants.dest_base -=
+-                uint32_t(write_descriptor_set_dest_buffer_info.offset);
+-            command_buffer.CmdVkPushConstants(
+-                resolve_copy_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
+-                sizeof(copy_shader_constants), &copy_shader_constants);
++        }
++
++        // Make sure there is memory to write to.
++        bool copy_dest_committed;
++        if (draw_resolution_scaled) {
++          copy_dest_committed = texture_cache.CommitScaledResolveRange(
++              resolve_info.copy_dest_base, copy_dest_range_unscaled, copy_shader_info.dest_bpe_log2);
++        } else {
++          copy_dest_committed = shared_memory.RequestRange(resolve_info.copy_dest_extent_start,
++                                                           resolve_info.copy_dest_extent_length);
++        }
++        if (!copy_dest_committed) {
++          REXGPU_ERROR(
++              "VulkanRenderTargetCache: Failed to obtain the resolve destination "
++              "memory region");
++        } else {
++          // TODO(Triang3l): Switching between descriptors if exceeding
++          // maxStorageBufferRange.
++          // TODO(Triang3l): Use a single 512 MB shared memory binding if
++          // possible.
++          VkDescriptorSet descriptor_set_dest = command_processor_.AllocateSingleTransientDescriptor(
++              VulkanCommandProcessor::SingleTransientDescriptorLayout ::kStorageBufferCompute);
++          if (descriptor_set_dest != VK_NULL_HANDLE) {
++            // Write the destination descriptor.
++            VkDescriptorBufferInfo write_descriptor_set_dest_buffer_info;
++            write_descriptor_set_dest_buffer_info.buffer = draw_resolution_scaled
++                                                               ? texture_cache.scaled_resolve_buffer()
++                                                               : shared_memory.buffer();
++            write_descriptor_set_dest_buffer_info.offset = copy_dest_base;
++            write_descriptor_set_dest_buffer_info.range = copy_dest_range_length;
++            VkWriteDescriptorSet write_descriptor_set_dest;
++            write_descriptor_set_dest.sType = VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET;
++            write_descriptor_set_dest.pNext = nullptr;
++            write_descriptor_set_dest.dstSet = descriptor_set_dest;
++            write_descriptor_set_dest.dstBinding = 0;
++            write_descriptor_set_dest.dstArrayElement = 0;
++            write_descriptor_set_dest.descriptorCount = 1;
++            write_descriptor_set_dest.descriptorType = VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;
++            write_descriptor_set_dest.pImageInfo = nullptr;
++            write_descriptor_set_dest.pBufferInfo = &write_descriptor_set_dest_buffer_info;
++            write_descriptor_set_dest.pTexelBufferView = nullptr;
++            dfn.vkUpdateDescriptorSets(device, 1, &write_descriptor_set_dest, 0, nullptr);
++
++            // Submit the resolve.
++            if (draw_resolution_scaled) {
++              texture_cache.UseScaledResolveBufferForWrite(copy_dest_use_start, copy_dest_use_length);
++            } else {
++              shared_memory.Use(VulkanSharedMemory::Usage::kComputeWrite,
++                                std::pair<uint32_t, uint32_t>(uint32_t(copy_dest_use_start),
++                                                              uint32_t(copy_dest_use_length)));
++            }
++            UseEdramBuffer(EdramBufferUsage::kComputeRead);
++            command_processor_.BindExternalComputePipeline(
++                resolve_copy_pipelines_[size_t(copy_shader)]);
++            VkDescriptorSet descriptor_sets[kResolveCopyDescriptorSetCount] = {};
++            descriptor_sets[kResolveCopyDescriptorSetEdram] = edram_storage_buffer_descriptor_set_;
++            descriptor_sets[kResolveCopyDescriptorSetDest] = descriptor_set_dest;
++            command_buffer.CmdVkBindDescriptorSets(
++                VK_PIPELINE_BIND_POINT_COMPUTE, resolve_copy_pipeline_layout_, 0,
++                uint32_t(rex::countof(descriptor_sets)), descriptor_sets, 0, nullptr);
++            if (draw_resolution_scaled) {
++              command_buffer.CmdVkPushConstants(
++                  resolve_copy_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++                  sizeof(copy_shader_constants.dest_relative), &copy_shader_constants.dest_relative);
++            } else {
++              // TODO(Triang3l): Proper dest_base in case of one 512 MB shared
++              // memory binding, or multiple shared memory bindings in case of
++              // splitting due to maxStorageBufferRange overflow.
++              copy_shader_constants.dest_base -=
++                  uint32_t(write_descriptor_set_dest_buffer_info.offset);
++              command_buffer.CmdVkPushConstants(
++                  resolve_copy_pipeline_layout_, VK_SHADER_STAGE_COMPUTE_BIT, 0,
++                  sizeof(copy_shader_constants), &copy_shader_constants);
++            }
++            command_processor_.SubmitBarriers(true);
++            command_buffer.CmdVkDispatch(copy_group_count_x, copy_group_count_y, 1);
++
++            // Invalidate textures and mark the range as scaled if needed.
++            texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
++                                              resolve_info.copy_dest_extent_length);
++            written_address_out = resolve_info.copy_dest_extent_start;
++            written_length_out = resolve_info.copy_dest_extent_length;
++            copied = true;
+           }
+-          command_processor_.SubmitBarriers(true);
+-          command_buffer.CmdVkDispatch(copy_group_count_x, copy_group_count_y, 1);
+-
+-          // Invalidate textures and mark the range as scaled if needed.
+-          texture_cache.MarkRangeAsResolved(resolve_info.copy_dest_extent_start,
+-                                            resolve_info.copy_dest_extent_length);
+-          written_address_out = resolve_info.copy_dest_extent_start;
+-          written_length_out = resolve_info.copy_dest_extent_length;
+-          copied = true;
+         }
+       }
+     }
+@@ -5955,68 +5988,137 @@ VkPipeline VulkanRenderTargetCache::GetDumpPipeline(DumpPipelineKey key) {
+ }
+ 
+ VkPipeline VulkanRenderTargetCache::GetDirectResolvePipeline(DirectResolvePipelineKey key) {
+-  auto pipeline_it = direct_resolve_pipelines_.find(key);
+-  if (pipeline_it != direct_resolve_pipelines_.end()) {
+-    return pipeline_it->second;
+-  }
+-  VkPipeline pipeline = VK_NULL_HANDLE;
+-  // Until dedicated direct host RT -> shared memory shaders are added, reuse
+-  // the resolve copy pipelines to keep all resolve shader modes wired for the
+-  // direct preflight path.
+-  size_t copy_shader_index = size_t(key.copy_shader);
+-  if (copy_shader_index < size_t(draw_util::ResolveCopyShaderIndex::kCount)) {
+-    pipeline = resolve_copy_pipelines_[copy_shader_index];
+-  }
+-  direct_resolve_pipelines_.emplace(key, pipeline);
++  auto it = direct_resolve_pipelines_.find(key);
++  if (it != direct_resolve_pipelines_.end()) return it->second;
++  const bool multisampled = key.dump_pipeline_key.msaa_samples != xenos::MsaaSamples::k1X;
++  const uint32_t* code = multisampled ? fnr3_direct::kMultisampled : fnr3_direct::kSingle;
++  const size_t bytes = multisampled ? sizeof(fnr3_direct::kMultisampled) : sizeof(fnr3_direct::kSingle);
++  VkPipeline pipeline = ui::vulkan::util::CreateComputePipeline(
++      command_processor_.GetVulkanDevice(), direct_resolve_pipeline_layout_color_, code, bytes);
++  direct_resolve_pipelines_.emplace(key,pipeline);
+   return pipeline;
+ }
+ 
+-bool VulkanRenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo& resolve_info,
+-                                                     draw_util::ResolveCopyShaderIndex copy_shader,
+-                                                     bool draw_resolution_scaled) {
++bool VulkanRenderTargetCache::TryResolveCopyDirectly(const draw_util::ResolveInfo& info,
++    draw_util::ResolveCopyShaderIndex copy_shader, bool scaled,
++    VulkanSharedMemory& shared_memory) {
+   ++direct_resolve_attempt_count_;
+-  (void)copy_shader;
+-  (void)draw_resolution_scaled;
+-  if (direct_resolve_pipeline_layout_color_ == VK_NULL_HANDLE ||
+-      direct_resolve_pipeline_layout_depth_ == VK_NULL_HANDLE) {
+-    return false;
+-  }
+-
+-  uint32_t dump_base;
+-  uint32_t dump_row_length_used;
+-  uint32_t dump_rows;
+-  uint32_t dump_pitch;
+-  resolve_info.GetCopyEdramTileSpan(dump_base, dump_row_length_used, dump_rows, dump_pitch);
+-  GetResolveCopyDispatchesToDump(dump_base, dump_row_length_used, dump_rows, dump_pitch,
+-                                 dump_rectangles_, direct_resolve_dispatches_);
+-  if (direct_resolve_dispatches_.empty()) {
+-    return false;
+-  }
+-
+-  for (const ResolveCopyDumpRectangle& rectangle : dump_rectangles_) {
+-    const auto* render_target = static_cast<const VulkanRenderTarget*>(rectangle.render_target);
+-    if (render_target == nullptr) {
+-      return false;
+-    }
+-    DumpPipelineKey dump_pipeline_key;
+-    dump_pipeline_key.msaa_samples = render_target->key().msaa_samples;
+-    dump_pipeline_key.resource_format = render_target->key().resource_format;
+-    dump_pipeline_key.is_depth = render_target->key().is_depth;
+-    if (GetDumpPipeline(dump_pipeline_key) == VK_NULL_HANDLE) {
+-      return false;
+-    }
+-    DirectResolvePipelineKey direct_pipeline_key;
+-    direct_pipeline_key.dump_pipeline_key = dump_pipeline_key;
+-    direct_pipeline_key.copy_shader = copy_shader;
+-    direct_pipeline_key.draw_resolution_scaled = draw_resolution_scaled;
+-    if (GetDirectResolvePipeline(direct_pipeline_key) == VK_NULL_HANDLE) {
+-      return false;
+-    }
+-  }
+-
+-  // Dedicated direct resolve dispatches are staged behind the same preflight;
+-  // keep using the existing dump path until source-image direct shaders land.
+-  return DumpRenderTargets(dump_base, dump_row_length_used, dump_rows, dump_pitch);
++  // Complete preflight, including resource allocation, before recording any
++  // destination writes. Unsupported representations retain the original path.
++  const auto& edram = info.color_edram_info;
++  const auto& dest_info = info.copy_dest_info;
++  const auto& coords = info.coordinate_info;
++  const auto& dest_coords = info.copy_dest_coordinate_info;
++  const uint32_t msaa = uint32_t(edram.msaa_samples);
++  const uint32_t select = uint32_t(dest_coords.copy_sample_select);
++  if (scaled || info.IsCopyingDepth() || edram.is_depth || edram.format_is_64bpp ||
++      edram.format != uint32_t(xenos::ColorRenderTargetFormat::k_8_8_8_8) ||
++      dest_info.copy_dest_format != xenos::ColorFormat::k_8_8_8_8 ||
++      dest_info.copy_dest_array || dest_info.copy_dest_slice || dest_info.copy_dest_exp_bias ||
++      uint32_t(dest_info.copy_dest_number) != 0 || uint32_t(dest_info.copy_dest_endian) > 3 ||
++      msaa > uint32_t(xenos::MsaaSamples::k2X) ||
++      (msaa == 0 ? select != 0 : (select > 1 && select != 4)) ||
++      coords.draw_resolution_scale_x != 1 || coords.draw_resolution_scale_y != 1 ||
++      direct_resolve_pipeline_layout_color_ == VK_NULL_HANDLE ||
++      !info.copy_dest_extent_length) return false;
++  uint32_t base, row_length, rows, pitch;
++  info.GetCopyEdramTileSpan(base,row_length,rows,pitch);
++  if (!rows || !row_length || !pitch || row_length > pitch ||
++      uint64_t(base)+uint64_t(rows-1)*pitch+row_length > xenos::kEdramTileCount) return false;
++  GetResolveCopyRectanglesToDump(base,row_length,rows,pitch,dump_rectangles_);
++  // A single complete owner; gaps, mixed formats and wrapped/fragmented
++  // ownership are deliberately not guessed or partially written.
++  if (dump_rectangles_.size() != 1) return false;
++  const auto& rect = dump_rectangles_[0];
++  if (!rect.render_target || rect.row_first || rect.rows != rows ||
++      rect.row_first_start || rect.row_last_end != row_length) return false;
++  auto& source = *static_cast<VulkanRenderTarget*>(rect.render_target);
++  const auto key = source.key();
++  if (key.is_depth || key.GetColorFormat() != xenos::ColorRenderTargetFormat::k_8_8_8_8 ||
++      key.msaa_samples != edram.msaa_samples || key.GetPitchTiles() != pitch ||
++      edram.base_tiles < key.base_tiles) return false;
++  const uint32_t tile_delta = edram.base_tiles-key.base_tiles;
++  DirectResolvePushConstants constants{};
++  constants.source_x = (tile_delta%pitch)*xenos::kEdramTileWidthSamples +
++                        (uint32_t(coords.edram_offset_x_div_8)<<3);
++  constants.source_y = (tile_delta/pitch)*(xenos::kEdramTileHeightSamples>>msaa) +
++                        (uint32_t(coords.edram_offset_y_div_8)<<3);
++  constants.width = uint32_t(coords.width_div_8)<<3;
++  constants.height = info.height_div_8<<3;
++  if (!constants.width || !constants.height ||
++      uint64_t(constants.source_x)+constants.width > key.GetWidth() ||
++      uint64_t(constants.source_y)+constants.height >
++          GetRenderTargetHeight(key.pitch_tiles_at_32bpp,key.msaa_samples)) return false;
++  constants.dest_x = uint32_t(dest_coords.offset_x_div_8)<<3;
++  constants.dest_y = uint32_t(dest_coords.offset_y_div_8)<<3;
++  constants.dest_pitch = uint32_t(dest_coords.pitch_aligned_div_32)<<5;
++  constants.endian = uint32_t(dest_info.copy_dest_endian);
++  constants.swap_rb = dest_info.copy_dest_swap;
++  constants.average_samples = select == uint32_t(xenos::CopySampleSelect::k01);
++  if (msaa) {
++    constants.sample_first = draw_util::GetD3D10SampleIndexForGuest2xMSAA(
++        select == 1 ? 1 : 0,msaa_2x_attachments_supported_);
++    constants.sample_second = draw_util::GetD3D10SampleIndexForGuest2xMSAA(
++        1,msaa_2x_attachments_supported_);
++  }
++  const uint64_t range = uint64_t(info.copy_dest_extent_start)-info.copy_dest_base+
++                         info.copy_dest_extent_length;
++  const auto* device = command_processor_.GetVulkanDevice();
++  const auto& properties = device->properties();
++  if (!constants.dest_pitch || constants.dest_x+constants.width > constants.dest_pitch ||
++      range > properties.maxStorageBufferRange ||
++      info.copy_dest_base%properties.minStorageBufferOffsetAlignment ||
++      uint64_t(info.copy_dest_base)+range > SharedMemory::kBufferSize ||
++      texture_util::GetTiledAddressUpperBound2D(constants.dest_x+constants.width,
++          constants.dest_y+constants.height,constants.dest_pitch,2) > range) return false;
++  DirectResolvePipelineKey pipeline_key;
++  pipeline_key.dump_pipeline_key.msaa_samples = key.msaa_samples;
++  pipeline_key.dump_pipeline_key.resource_format = key.resource_format;
++  pipeline_key.dump_pipeline_key.is_depth = 0;
++  pipeline_key.copy_shader = copy_shader;
++  pipeline_key.draw_resolution_scaled = false;
++  const VkPipeline pipeline = GetDirectResolvePipeline(pipeline_key);
++  const VkDescriptorSet sampled = source.GetDescriptorSetTransferSource();
++  if (pipeline == VK_NULL_HANDLE || sampled == VK_NULL_HANDLE) return false;
++  const VkDescriptorSet destination = command_processor_.AllocateSingleTransientDescriptor(
++      VulkanCommandProcessor::SingleTransientDescriptorLayout::kStorageBufferCompute);
++  if (destination == VK_NULL_HANDLE || !shared_memory.RequestRange(
++          info.copy_dest_extent_start,info.copy_dest_extent_length)) return false;
++  VkDescriptorBufferInfo buffer_info{};
++  buffer_info.buffer = shared_memory.buffer();
++  buffer_info.offset = info.copy_dest_base;
++  buffer_info.range = range;
++  VkWriteDescriptorSet write{VK_STRUCTURE_TYPE_WRITE_DESCRIPTOR_SET};
++  write.dstSet=destination;write.dstBinding=0;write.descriptorCount=1;
++  write.descriptorType=VK_DESCRIPTOR_TYPE_STORAGE_BUFFER;write.pBufferInfo=&buffer_info;
++  device->functions().vkUpdateDescriptorSets(device->device(),1,&write,0,nullptr);
++  // No fallback after this point: this is the real host-image -> tiled-buffer
++  // dispatch, with the same shared-memory dirtying and post-copy clears as Resolve.
++  command_processor_.PushImageMemoryBarrier(source.image(),
++      ui::vulkan::util::InitializeSubresourceRange(VK_IMAGE_ASPECT_COLOR_BIT),
++      source.current_stage_mask(),VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,
++      source.current_access_mask(),VK_ACCESS_SHADER_READ_BIT,source.current_layout(),
++      VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++  source.SetUsage(VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT,VK_ACCESS_SHADER_READ_BIT,
++                  VK_IMAGE_LAYOUT_SHADER_READ_ONLY_OPTIMAL);
++  shared_memory.Use(VulkanSharedMemory::Usage::kComputeWrite,
++      std::pair<uint32_t,uint32_t>(info.copy_dest_extent_start,info.copy_dest_extent_length));
++  command_processor_.BindExternalComputePipeline(pipeline);
++  auto& command_buffer = command_processor_.deferred_command_buffer();
++  const VkDescriptorSet sets[] = {destination,sampled};
++  command_buffer.CmdVkBindDescriptorSets(VK_PIPELINE_BIND_POINT_COMPUTE,
++      direct_resolve_pipeline_layout_color_,0,2,sets,0,nullptr);
++  command_buffer.CmdVkPushConstants(direct_resolve_pipeline_layout_color_,
++      VK_SHADER_STAGE_COMPUTE_BIT,0,sizeof(constants),&constants);
++  command_processor_.SubmitBarriers(true);
++  command_buffer.CmdVkDispatch((constants.width+7)/8,(constants.height+7)/8,1);
++  direct_resolve_pixels_ += uint64_t(constants.width)*constants.height;
++  direct_resolve_output_range_bytes_ += info.copy_dest_extent_length;
++  if (direct_resolve_success_count_ < 8) REXGPU_INFO(
++      "FNR3 direct resolve: {}x{} source({},{}) -> {:08X} {}xMSAA; no EDRAM dump",
++      constants.width,constants.height,constants.source_x,constants.source_y,
++      info.copy_dest_base,1u<<msaa);
++  return true;
+ }
+ 
+ bool VulkanRenderTargetCache::DumpRenderTargets(uint32_t dump_base, uint32_t dump_row_length_used,
+--- /dev/null
++++ b/src/graphics/shaders/fnr3_direct_resolve.comp.glsl
+@@ -0,0 +1,51 @@
++// Host color image to Xenos tiled shared memory. Integration: djultra64.
++// Tiled address arithmetic derives from Xenia / ReXGlue texture/util.cpp
++// (BSD license; original dependency notices remain in the source tree).
++#version 450
++#extension GL_EXT_samplerless_texture_functions : require
++layout(local_size_x=8,local_size_y=8) in;
++layout(set=0,binding=0,std430) writeonly buffer Destination { uint words[]; } dest;
++#ifdef MULTISAMPLED
++layout(set=1,binding=0) uniform texture2DMS source_image;
++#else
++layout(set=1,binding=0) uniform texture2D source_image;
++#endif
++layout(push_constant) uniform Push {
++ uint source_x; uint source_y; uint width; uint height;
++ uint dest_x; uint dest_y; uint dest_pitch; uint endian;
++ uint swap_rb; uint sample_first; uint sample_second; uint average_samples;
++} pc;
++uint tiled_offset(uint x,uint y,uint pitch) {
++ uint macro=((x>>5)+(y>>5)*(pitch>>5))<<9;
++ uint micro=((x&7)+((y&14)<<2))<<2;
++ uint offset=macro+((micro&~15u)<<1)+(micro&15u)+((y&1)<<4);
++ return ((offset&~511u)<<3)+((y&16)<<7)+((offset&448u)<<2)
++       +(((((y&8)>>2)+(x>>3))&3)<<6)+(offset&63u);
++}
++vec4 read_sample(ivec2 p,uint index) {
++#ifdef MULTISAMPLED
++ return texelFetch(source_image,p,int(index));
++#else
++ return texelFetch(source_image,p,0);
++#endif
++}
++void main() {
++ uvec2 pos=gl_GlobalInvocationID.xy;
++ if(any(greaterThanEqual(pos,uvec2(pc.width,pc.height)))) return;
++ ivec2 source=ivec2(pos+uvec2(pc.source_x,pc.source_y));
++ // Same UNORM8 quantization as GetDumpPipeline before the normal resolve.
++ uvec4 a=uvec4(clamp(read_sample(source,pc.sample_first),0.0,1.0)*255.0+0.5);
++ vec4 value=vec4(a)*(1.0/255.0);
++ if(pc.average_samples!=0) {
++  uvec4 b=uvec4(clamp(read_sample(source,pc.sample_second),0.0,1.0)*255.0+0.5);
++  value=(value+vec4(b)*(1.0/255.0))*0.5;
++ }
++ // Match the full resolve's floating-point normalize/pack operations.
++ uvec4 rgba=uvec4(clamp(value,0.0,1.0)*255.0+0.5);
++ if(pc.swap_rb!=0) rgba=rgba.bgra;
++ uint packed=rgba.r|(rgba.g<<8)|(rgba.b<<16)|(rgba.a<<24);
++ if(pc.endian==1 || pc.endian==2) packed=((packed&0x00FF00FFu)<<8)|((packed>>8)&0x00FF00FFu);
++ if(pc.endian==2 || pc.endian==3) packed=(packed<<16)|(packed>>16);
++ uint address=tiled_offset(pos.x+pc.dest_x,pos.y+pc.dest_y,pc.dest_pitch);
++ dest.words[address>>2]=packed;
++}
+--- /dev/null
++++ b/include/rex/graphics/vulkan/fnr3_direct_resolve_spirv.h
+@@ -0,0 +1,456 @@
++// Generated from src/graphics/shaders/fnr3_direct_resolve.comp.glsl. Integration: djultra64.
++#pragma once
++#include <cstdint>
++namespace rex::graphics::vulkan::fnr3_direct {
++inline constexpr uint32_t kSingle[] = {
++  0x07230203u, 0x00010000u, 0x0008000Bu, 0x00000127u, 0x00000000u, 0x00020011u, 0x00000001u, 0x0006000Bu,
++  0x00000001u, 0x4C534C47u, 0x6474732Eu, 0x3035342Eu, 0x00000000u, 0x0003000Eu, 0x00000000u, 0x00000001u,
++  0x0006000Fu, 0x00000005u, 0x00000004u, 0x6E69616Du, 0x00000000u, 0x00000071u, 0x00060010u, 0x00000004u,
++  0x00000011u, 0x00000008u, 0x00000008u, 0x00000001u, 0x00030003u, 0x00000002u, 0x000001C2u, 0x000B0004u,
++  0x455F4C47u, 0x735F5458u, 0x6C706D61u, 0x656C7265u, 0x745F7373u, 0x75747865u, 0x665F6572u, 0x74636E75u,
++  0x736E6F69u, 0x00000000u, 0x00040005u, 0x00000004u, 0x6E69616Du, 0x00000000u, 0x00080005u, 0x0000000Cu,
++  0x656C6974u, 0x666F5F64u, 0x74657366u, 0x3B317528u, 0x753B3175u, 0x00003B31u, 0x00030005u, 0x00000009u,
++  0x00000078u, 0x00030005u, 0x0000000Au, 0x00000079u, 0x00040005u, 0x0000000Bu, 0x63746970u, 0x00000068u,
++  0x00070005u, 0x00000016u, 0x64616572u, 0x6D61735Fu, 0x28656C70u, 0x3B326976u, 0x003B3175u, 0x00030005u,
++  0x00000014u, 0x00000070u, 0x00040005u, 0x00000015u, 0x65646E69u, 0x00000078u, 0x00040005u, 0x00000018u,
++  0x7263616Du, 0x0000006Fu, 0x00040005u, 0x00000024u, 0x7263696Du, 0x0000006Fu, 0x00040005u, 0x0000002Fu,
++  0x7366666Fu, 0x00007465u, 0x00060005u, 0x00000065u, 0x72756F73u, 0x695F6563u, 0x6567616Du, 0x00000000u,
++  0x00030005u, 0x0000006Eu, 0x00736F70u, 0x00080005u, 0x00000071u, 0x475F6C67u, 0x61626F6Cu, 0x766E496Cu,
++  0x7461636Fu, 0x496E6F69u, 0x00000044u, 0x00040005u, 0x00000075u, 0x68737550u, 0x00000000u, 0x00060006u,
++  0x00000075u, 0x00000000u, 0x72756F73u, 0x785F6563u, 0x00000000u, 0x00060006u, 0x00000075u, 0x00000001u,
++  0x72756F73u, 0x795F6563u, 0x00000000u, 0x00050006u, 0x00000075u, 0x00000002u, 0x74646977u, 0x00000068u,
++  0x00050006u, 0x00000075u, 0x00000003u, 0x67696568u, 0x00007468u, 0x00050006u, 0x00000075u, 0x00000004u,
++  0x74736564u, 0x0000785Fu, 0x00050006u, 0x00000075u, 0x00000005u, 0x74736564u, 0x0000795Fu, 0x00060006u,
++  0x00000075u, 0x00000006u, 0x74736564u, 0x7469705Fu, 0x00006863u, 0x00050006u, 0x00000075u, 0x00000007u,
++  0x69646E65u, 0x00006E61u, 0x00050006u, 0x00000075u, 0x00000008u, 0x70617773u, 0x0062725Fu, 0x00070006u,
++  0x00000075u, 0x00000009u, 0x706D6173u, 0x665F656Cu, 0x74737269u, 0x00000000u, 0x00070006u, 0x00000075u,
++  0x0000000Au, 0x706D6173u, 0x735F656Cu, 0x6E6F6365u, 0x00000064u, 0x00070006u, 0x00000075u, 0x0000000Bu,
++  0x72657661u, 0x5F656761u, 0x706D6173u, 0x0073656Cu, 0x00030005u, 0x00000077u, 0x00006370u, 0x00040005u,
++  0x00000085u, 0x72756F73u, 0x00006563u, 0x00030005u, 0x00000090u, 0x00000061u, 0x00040005u, 0x00000091u,
++  0x61726170u, 0x0000006Du, 0x00040005u, 0x00000093u, 0x61726170u, 0x0000006Du, 0x00040005u, 0x000000A3u,
++  0x756C6176u, 0x00000065u, 0x00030005u, 0x000000AFu, 0x00000062u, 0x00040005u, 0x000000B1u, 0x61726170u,
++  0x0000006Du, 0x00040005u, 0x000000B3u, 0x61726170u, 0x0000006Du, 0x00040005u, 0x000000C4u, 0x61626772u,
++  0x00000000u, 0x00040005u, 0x000000D5u, 0x6B636170u, 0x00006465u, 0x00040005u, 0x0000010Cu, 0x72646461u,
++  0x00737365u, 0x00040005u, 0x00000117u, 0x61726170u, 0x0000006Du, 0x00040005u, 0x00000118u, 0x61726170u,
++  0x0000006Du, 0x00040005u, 0x00000119u, 0x61726170u, 0x0000006Du, 0x00050005u, 0x0000011Eu, 0x74736544u,
++  0x74616E69u, 0x006E6F69u, 0x00050006u, 0x0000011Eu, 0x00000000u, 0x64726F77u, 0x00000073u, 0x00040005u,
++  0x00000120u, 0x74736564u, 0x00000000u, 0x00040047u, 0x00000065u, 0x00000021u, 0x00000000u, 0x00040047u,
++  0x00000065u, 0x00000022u, 0x00000001u, 0x00040047u, 0x00000071u, 0x0000000Bu, 0x0000001Cu, 0x00030047u,
++  0x00000075u, 0x00000002u, 0x00050048u, 0x00000075u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00050048u,
++  0x00000075u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00050048u, 0x00000075u, 0x00000002u, 0x00000023u,
++  0x00000008u, 0x00050048u, 0x00000075u, 0x00000003u, 0x00000023u, 0x0000000Cu, 0x00050048u, 0x00000075u,
++  0x00000004u, 0x00000023u, 0x00000010u, 0x00050048u, 0x00000075u, 0x00000005u, 0x00000023u, 0x00000014u,
++  0x00050048u, 0x00000075u, 0x00000006u, 0x00000023u, 0x00000018u, 0x00050048u, 0x00000075u, 0x00000007u,
++  0x00000023u, 0x0000001Cu, 0x00050048u, 0x00000075u, 0x00000008u, 0x00000023u, 0x00000020u, 0x00050048u,
++  0x00000075u, 0x00000009u, 0x00000023u, 0x00000024u, 0x00050048u, 0x00000075u, 0x0000000Au, 0x00000023u,
++  0x00000028u, 0x00050048u, 0x00000075u, 0x0000000Bu, 0x00000023u, 0x0000002Cu, 0x00040047u, 0x0000011Du,
++  0x00000006u, 0x00000004u, 0x00030047u, 0x0000011Eu, 0x00000003u, 0x00040048u, 0x0000011Eu, 0x00000000u,
++  0x00000019u, 0x00050048u, 0x0000011Eu, 0x00000000u, 0x00000023u, 0x00000000u, 0x00030047u, 0x00000120u,
++  0x00000019u, 0x00040047u, 0x00000120u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000120u, 0x00000022u,
++  0x00000000u, 0x00040047u, 0x00000126u, 0x0000000Bu, 0x00000019u, 0x00020013u, 0x00000002u, 0x00030021u,
++  0x00000003u, 0x00000002u, 0x00040015u, 0x00000006u, 0x00000020u, 0x00000000u, 0x00040020u, 0x00000007u,
++  0x00000007u, 0x00000006u, 0x00060021u, 0x00000008u, 0x00000006u, 0x00000007u, 0x00000007u, 0x00000007u,
++  0x00040015u, 0x0000000Eu, 0x00000020u, 0x00000001u, 0x00040017u, 0x0000000Fu, 0x0000000Eu, 0x00000002u,
++  0x00040020u, 0x00000010u, 0x00000007u, 0x0000000Fu, 0x00030016u, 0x00000011u, 0x00000020u, 0x00040017u,
++  0x00000012u, 0x00000011u, 0x00000004u, 0x00050021u, 0x00000013u, 0x00000012u, 0x00000010u, 0x00000007u,
++  0x0004002Bu, 0x0000000Eu, 0x0000001Au, 0x00000005u, 0x0004002Bu, 0x0000000Eu, 0x00000022u, 0x00000009u,
++  0x0004002Bu, 0x00000006u, 0x00000026u, 0x00000007u, 0x0004002Bu, 0x00000006u, 0x00000029u, 0x0000000Eu,
++  0x0004002Bu, 0x0000000Eu, 0x0000002Bu, 0x00000002u, 0x0004002Bu, 0x00000006u, 0x00000032u, 0xFFFFFFF0u,
++  0x0004002Bu, 0x0000000Eu, 0x00000034u, 0x00000001u, 0x0004002Bu, 0x00000006u, 0x00000038u, 0x0000000Fu,
++  0x0004002Bu, 0x00000006u, 0x0000003Cu, 0x00000001u, 0x0004002Bu, 0x0000000Eu, 0x0000003Eu, 0x00000004u,
++  0x0004002Bu, 0x00000006u, 0x00000042u, 0xFFFFFE00u, 0x0004002Bu, 0x0000000Eu, 0x00000044u, 0x00000003u,
++  0x0004002Bu, 0x00000006u, 0x00000047u, 0x00000010u, 0x0004002Bu, 0x0000000Eu, 0x00000049u, 0x00000007u,
++  0x0004002Bu, 0x00000006u, 0x0000004Du, 0x000001C0u, 0x0004002Bu, 0x00000006u, 0x00000052u, 0x00000008u,
++  0x0004002Bu, 0x00000006u, 0x00000058u, 0x00000003u, 0x0004002Bu, 0x0000000Eu, 0x0000005Au, 0x00000006u,
++  0x0004002Bu, 0x00000006u, 0x0000005Eu, 0x0000003Fu, 0x00090019u, 0x00000063u, 0x00000011u, 0x00000001u,
++  0x00000000u, 0x00000000u, 0x00000000u, 0x00000001u, 0x00000000u, 0x00040020u, 0x00000064u, 0x00000000u,
++  0x00000063u, 0x0004003Bu, 0x00000064u, 0x00000065u, 0x00000000u, 0x0004002Bu, 0x0000000Eu, 0x00000068u,
++  0x00000000u, 0x00040017u, 0x0000006Cu, 0x00000006u, 0x00000002u, 0x00040020u, 0x0000006Du, 0x00000007u,
++  0x0000006Cu, 0x00040017u, 0x0000006Fu, 0x00000006u, 0x00000003u, 0x00040020u, 0x00000070u, 0x00000001u,
++  0x0000006Fu, 0x0004003Bu, 0x00000070u, 0x00000071u, 0x00000001u, 0x000E001Eu, 0x00000075u, 0x00000006u,
++  0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u,
++  0x00000006u, 0x00000006u, 0x00000006u, 0x00040020u, 0x00000076u, 0x00000009u, 0x00000075u, 0x0004003Bu,
++  0x00000076u, 0x00000077u, 0x00000009u, 0x00040020u, 0x00000078u, 0x00000009u, 0x00000006u, 0x00020014u,
++  0x0000007Eu, 0x00040017u, 0x0000007Fu, 0x0000007Eu, 0x00000002u, 0x00040017u, 0x0000008Eu, 0x00000006u,
++  0x00000004u, 0x00040020u, 0x0000008Fu, 0x00000007u, 0x0000008Eu, 0x0004002Bu, 0x00000011u, 0x00000097u,
++  0x00000000u, 0x0004002Bu, 0x00000011u, 0x00000098u, 0x3F800000u, 0x0004002Bu, 0x00000011u, 0x0000009Cu,
++  0x437F0000u, 0x0004002Bu, 0x00000011u, 0x0000009Eu, 0x3F000000u, 0x00040020u, 0x000000A2u, 0x00000007u,
++  0x00000012u, 0x0004002Bu, 0x00000011u, 0x000000A6u, 0x3B808081u, 0x0004002Bu, 0x0000000Eu, 0x000000A8u,
++  0x0000000Bu, 0x0004002Bu, 0x00000006u, 0x000000ABu, 0x00000000u, 0x0004002Bu, 0x0000000Eu, 0x000000B0u,
++  0x0000000Au, 0x0004002Bu, 0x0000000Eu, 0x000000CDu, 0x00000008u, 0x0004002Bu, 0x00000006u, 0x000000DCu,
++  0x00000002u, 0x0004002Bu, 0x0000000Eu, 0x000000DFu, 0x00000010u, 0x0004002Bu, 0x0000000Eu, 0x000000E4u,
++  0x00000018u, 0x0004002Bu, 0x00000006u, 0x000000F4u, 0x00FF00FFu, 0x0003001Du, 0x0000011Du, 0x00000006u,
++  0x0003001Eu, 0x0000011Eu, 0x0000011Du, 0x00040020u, 0x0000011Fu, 0x00000002u, 0x0000011Eu, 0x0004003Bu,
++  0x0000011Fu, 0x00000120u, 0x00000002u, 0x00040020u, 0x00000124u, 0x00000002u, 0x00000006u, 0x0006002Cu,
++  0x0000006Fu, 0x00000126u, 0x00000052u, 0x00000052u, 0x0000003Cu, 0x00050036u, 0x00000002u, 0x00000004u,
++  0x00000000u, 0x00000003u, 0x000200F8u, 0x00000005u, 0x0004003Bu, 0x0000006Du, 0x0000006Eu, 0x00000007u,
++  0x0004003Bu, 0x00000010u, 0x00000085u, 0x00000007u, 0x0004003Bu, 0x0000008Fu, 0x00000090u, 0x00000007u,
++  0x0004003Bu, 0x00000010u, 0x00000091u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x00000093u, 0x00000007u,
++  0x0004003Bu, 0x000000A2u, 0x000000A3u, 0x00000007u, 0x0004003Bu, 0x0000008Fu, 0x000000AFu, 0x00000007u,
++  0x0004003Bu, 0x00000010u, 0x000000B1u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x000000B3u, 0x00000007u,
++  0x0004003Bu, 0x0000008Fu, 0x000000C4u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x000000D5u, 0x00000007u,
++  0x0004003Bu, 0x00000007u, 0x0000010Cu, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x00000117u, 0x00000007u,
++  0x0004003Bu, 0x00000007u, 0x00000118u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x00000119u, 0x00000007u,
++  0x0004003Du, 0x0000006Fu, 0x00000072u, 0x00000071u, 0x0007004Fu, 0x0000006Cu, 0x00000073u, 0x00000072u,
++  0x00000072u, 0x00000000u, 0x00000001u, 0x0003003Eu, 0x0000006Eu, 0x00000073u, 0x0004003Du, 0x0000006Cu,
++  0x00000074u, 0x0000006Eu, 0x00050041u, 0x00000078u, 0x00000079u, 0x00000077u, 0x0000002Bu, 0x0004003Du,
++  0x00000006u, 0x0000007Au, 0x00000079u, 0x00050041u, 0x00000078u, 0x0000007Bu, 0x00000077u, 0x00000044u,
++  0x0004003Du, 0x00000006u, 0x0000007Cu, 0x0000007Bu, 0x00050050u, 0x0000006Cu, 0x0000007Du, 0x0000007Au,
++  0x0000007Cu, 0x000500AEu, 0x0000007Fu, 0x00000080u, 0x00000074u, 0x0000007Du, 0x0004009Au, 0x0000007Eu,
++  0x00000081u, 0x00000080u, 0x000300F7u, 0x00000083u, 0x00000000u, 0x000400FAu, 0x00000081u, 0x00000082u,
++  0x00000083u, 0x000200F8u, 0x00000082u, 0x000100FDu, 0x000200F8u, 0x00000083u, 0x0004003Du, 0x0000006Cu,
++  0x00000086u, 0x0000006Eu, 0x00050041u, 0x00000078u, 0x00000087u, 0x00000077u, 0x00000068u, 0x0004003Du,
++  0x00000006u, 0x00000088u, 0x00000087u, 0x00050041u, 0x00000078u, 0x00000089u, 0x00000077u, 0x00000034u,
++  0x0004003Du, 0x00000006u, 0x0000008Au, 0x00000089u, 0x00050050u, 0x0000006Cu, 0x0000008Bu, 0x00000088u,
++  0x0000008Au, 0x00050080u, 0x0000006Cu, 0x0000008Cu, 0x00000086u, 0x0000008Bu, 0x0004007Cu, 0x0000000Fu,
++  0x0000008Du, 0x0000008Cu, 0x0003003Eu, 0x00000085u, 0x0000008Du, 0x0004003Du, 0x0000000Fu, 0x00000092u,
++  0x00000085u, 0x0003003Eu, 0x00000091u, 0x00000092u, 0x00050041u, 0x00000078u, 0x00000094u, 0x00000077u,
++  0x00000022u, 0x0004003Du, 0x00000006u, 0x00000095u, 0x00000094u, 0x0003003Eu, 0x00000093u, 0x00000095u,
++  0x00060039u, 0x00000012u, 0x00000096u, 0x00000016u, 0x00000091u, 0x00000093u, 0x00070050u, 0x00000012u,
++  0x00000099u, 0x00000097u, 0x00000097u, 0x00000097u, 0x00000097u, 0x00070050u, 0x00000012u, 0x0000009Au,
++  0x00000098u, 0x00000098u, 0x00000098u, 0x00000098u, 0x0008000Cu, 0x00000012u, 0x0000009Bu, 0x00000001u,
++  0x0000002Bu, 0x00000096u, 0x00000099u, 0x0000009Au, 0x0005008Eu, 0x00000012u, 0x0000009Du, 0x0000009Bu,
++  0x0000009Cu, 0x00070050u, 0x00000012u, 0x0000009Fu, 0x0000009Eu, 0x0000009Eu, 0x0000009Eu, 0x0000009Eu,
++  0x00050081u, 0x00000012u, 0x000000A0u, 0x0000009Du, 0x0000009Fu, 0x0004006Du, 0x0000008Eu, 0x000000A1u,
++  0x000000A0u, 0x0003003Eu, 0x00000090u, 0x000000A1u, 0x0004003Du, 0x0000008Eu, 0x000000A4u, 0x00000090u,
++  0x00040070u, 0x00000012u, 0x000000A5u, 0x000000A4u, 0x0005008Eu, 0x00000012u, 0x000000A7u, 0x000000A5u,
++  0x000000A6u, 0x0003003Eu, 0x000000A3u, 0x000000A7u, 0x00050041u, 0x00000078u, 0x000000A9u, 0x00000077u,
++  0x000000A8u, 0x0004003Du, 0x00000006u, 0x000000AAu, 0x000000A9u, 0x000500ABu, 0x0000007Eu, 0x000000ACu,
++  0x000000AAu, 0x000000ABu, 0x000300F7u, 0x000000AEu, 0x00000000u, 0x000400FAu, 0x000000ACu, 0x000000ADu,
++  0x000000AEu, 0x000200F8u, 0x000000ADu, 0x0004003Du, 0x0000000Fu, 0x000000B2u, 0x00000085u, 0x0003003Eu,
++  0x000000B1u, 0x000000B2u, 0x00050041u, 0x00000078u, 0x000000B4u, 0x00000077u, 0x000000B0u, 0x0004003Du,
++  0x00000006u, 0x000000B5u, 0x000000B4u, 0x0003003Eu, 0x000000B3u, 0x000000B5u, 0x00060039u, 0x00000012u,
++  0x000000B6u, 0x00000016u, 0x000000B1u, 0x000000B3u, 0x00070050u, 0x00000012u, 0x000000B7u, 0x00000097u,
++  0x00000097u, 0x00000097u, 0x00000097u, 0x00070050u, 0x00000012u, 0x000000B8u, 0x00000098u, 0x00000098u,
++  0x00000098u, 0x00000098u, 0x0008000Cu, 0x00000012u, 0x000000B9u, 0x00000001u, 0x0000002Bu, 0x000000B6u,
++  0x000000B7u, 0x000000B8u, 0x0005008Eu, 0x00000012u, 0x000000BAu, 0x000000B9u, 0x0000009Cu, 0x00070050u,
++  0x00000012u, 0x000000BBu, 0x0000009Eu, 0x0000009Eu, 0x0000009Eu, 0x0000009Eu, 0x00050081u, 0x00000012u,
++  0x000000BCu, 0x000000BAu, 0x000000BBu, 0x0004006Du, 0x0000008Eu, 0x000000BDu, 0x000000BCu, 0x0003003Eu,
++  0x000000AFu, 0x000000BDu, 0x0004003Du, 0x00000012u, 0x000000BEu, 0x000000A3u, 0x0004003Du, 0x0000008Eu,
++  0x000000BFu, 0x000000AFu, 0x00040070u, 0x00000012u, 0x000000C0u, 0x000000BFu, 0x0005008Eu, 0x00000012u,
++  0x000000C1u, 0x000000C0u, 0x000000A6u, 0x00050081u, 0x00000012u, 0x000000C2u, 0x000000BEu, 0x000000C1u,
++  0x0005008Eu, 0x00000012u, 0x000000C3u, 0x000000C2u, 0x0000009Eu, 0x0003003Eu, 0x000000A3u, 0x000000C3u,
++  0x000200F9u, 0x000000AEu, 0x000200F8u, 0x000000AEu, 0x0004003Du, 0x00000012u, 0x000000C5u, 0x000000A3u,
++  0x00070050u, 0x00000012u, 0x000000C6u, 0x00000097u, 0x00000097u, 0x00000097u, 0x00000097u, 0x00070050u,
++  0x00000012u, 0x000000C7u, 0x00000098u, 0x00000098u, 0x00000098u, 0x00000098u, 0x0008000Cu, 0x00000012u,
++  0x000000C8u, 0x00000001u, 0x0000002Bu, 0x000000C5u, 0x000000C6u, 0x000000C7u, 0x0005008Eu, 0x00000012u,
++  0x000000C9u, 0x000000C8u, 0x0000009Cu, 0x00070050u, 0x00000012u, 0x000000CAu, 0x0000009Eu, 0x0000009Eu,
++  0x0000009Eu, 0x0000009Eu, 0x00050081u, 0x00000012u, 0x000000CBu, 0x000000C9u, 0x000000CAu, 0x0004006Du,
++  0x0000008Eu, 0x000000CCu, 0x000000CBu, 0x0003003Eu, 0x000000C4u, 0x000000CCu, 0x00050041u, 0x00000078u,
++  0x000000CEu, 0x00000077u, 0x000000CDu, 0x0004003Du, 0x00000006u, 0x000000CFu, 0x000000CEu, 0x000500ABu,
++  0x0000007Eu, 0x000000D0u, 0x000000CFu, 0x000000ABu, 0x000300F7u, 0x000000D2u, 0x00000000u, 0x000400FAu,
++  0x000000D0u, 0x000000D1u, 0x000000D2u, 0x000200F8u, 0x000000D1u, 0x0004003Du, 0x0000008Eu, 0x000000D3u,
++  0x000000C4u, 0x0009004Fu, 0x0000008Eu, 0x000000D4u, 0x000000D3u, 0x000000D3u, 0x00000002u, 0x00000001u,
++  0x00000000u, 0x00000003u, 0x0003003Eu, 0x000000C4u, 0x000000D4u, 0x000200F9u, 0x000000D2u, 0x000200F8u,
++  0x000000D2u, 0x00050041u, 0x00000007u, 0x000000D6u, 0x000000C4u, 0x000000ABu, 0x0004003Du, 0x00000006u,
++  0x000000D7u, 0x000000D6u, 0x00050041u, 0x00000007u, 0x000000D8u, 0x000000C4u, 0x0000003Cu, 0x0004003Du,
++  0x00000006u, 0x000000D9u, 0x000000D8u, 0x000500C4u, 0x00000006u, 0x000000DAu, 0x000000D9u, 0x000000CDu,
++  0x000500C5u, 0x00000006u, 0x000000DBu, 0x000000D7u, 0x000000DAu, 0x00050041u, 0x00000007u, 0x000000DDu,
++  0x000000C4u, 0x000000DCu, 0x0004003Du, 0x00000006u, 0x000000DEu, 0x000000DDu, 0x000500C4u, 0x00000006u,
++  0x000000E0u, 0x000000DEu, 0x000000DFu, 0x000500C5u, 0x00000006u, 0x000000E1u, 0x000000DBu, 0x000000E0u,
++  0x00050041u, 0x00000007u, 0x000000E2u, 0x000000C4u, 0x00000058u, 0x0004003Du, 0x00000006u, 0x000000E3u,
++  0x000000E2u, 0x000500C4u, 0x00000006u, 0x000000E5u, 0x000000E3u, 0x000000E4u, 0x000500C5u, 0x00000006u,
++  0x000000E6u, 0x000000E1u, 0x000000E5u, 0x0003003Eu, 0x000000D5u, 0x000000E6u, 0x00050041u, 0x00000078u,
++  0x000000E7u, 0x00000077u, 0x00000049u, 0x0004003Du, 0x00000006u, 0x000000E8u, 0x000000E7u, 0x000500AAu,
++  0x0000007Eu, 0x000000E9u, 0x000000E8u, 0x0000003Cu, 0x000400A8u, 0x0000007Eu, 0x000000EAu, 0x000000E9u,
++  0x000300F7u, 0x000000ECu, 0x00000000u, 0x000400FAu, 0x000000EAu, 0x000000EBu, 0x000000ECu, 0x000200F8u,
++  0x000000EBu, 0x00050041u, 0x00000078u, 0x000000EDu, 0x00000077u, 0x00000049u, 0x0004003Du, 0x00000006u,
++  0x000000EEu, 0x000000EDu, 0x000500AAu, 0x0000007Eu, 0x000000EFu, 0x000000EEu, 0x000000DCu, 0x000200F9u,
++  0x000000ECu, 0x000200F8u, 0x000000ECu, 0x000700F5u, 0x0000007Eu, 0x000000F0u, 0x000000E9u, 0x000000D2u,
++  0x000000EFu, 0x000000EBu, 0x000300F7u, 0x000000F2u, 0x00000000u, 0x000400FAu, 0x000000F0u, 0x000000F1u,
++  0x000000F2u, 0x000200F8u, 0x000000F1u, 0x0004003Du, 0x00000006u, 0x000000F3u, 0x000000D5u, 0x000500C7u,
++  0x00000006u, 0x000000F5u, 0x000000F3u, 0x000000F4u, 0x000500C4u, 0x00000006u, 0x000000F6u, 0x000000F5u,
++  0x000000CDu, 0x0004003Du, 0x00000006u, 0x000000F7u, 0x000000D5u, 0x000500C2u, 0x00000006u, 0x000000F8u,
++  0x000000F7u, 0x000000CDu, 0x000500C7u, 0x00000006u, 0x000000F9u, 0x000000F8u, 0x000000F4u, 0x000500C5u,
++  0x00000006u, 0x000000FAu, 0x000000F6u, 0x000000F9u, 0x0003003Eu, 0x000000D5u, 0x000000FAu, 0x000200F9u,
++  0x000000F2u, 0x000200F8u, 0x000000F2u, 0x00050041u, 0x00000078u, 0x000000FBu, 0x00000077u, 0x00000049u,
++  0x0004003Du, 0x00000006u, 0x000000FCu, 0x000000FBu, 0x000500AAu, 0x0000007Eu, 0x000000FDu, 0x000000FCu,
++  0x000000DCu, 0x000400A8u, 0x0000007Eu, 0x000000FEu, 0x000000FDu, 0x000300F7u, 0x00000100u, 0x00000000u,
++  0x000400FAu, 0x000000FEu, 0x000000FFu, 0x00000100u, 0x000200F8u, 0x000000FFu, 0x00050041u, 0x00000078u,
++  0x00000101u, 0x00000077u, 0x00000049u, 0x0004003Du, 0x00000006u, 0x00000102u, 0x00000101u, 0x000500AAu,
++  0x0000007Eu, 0x00000103u, 0x00000102u, 0x00000058u, 0x000200F9u, 0x00000100u, 0x000200F8u, 0x00000100u,
++  0x000700F5u, 0x0000007Eu, 0x00000104u, 0x000000FDu, 0x000000F2u, 0x00000103u, 0x000000FFu, 0x000300F7u,
++  0x00000106u, 0x00000000u, 0x000400FAu, 0x00000104u, 0x00000105u, 0x00000106u, 0x000200F8u, 0x00000105u,
++  0x0004003Du, 0x00000006u, 0x00000107u, 0x000000D5u, 0x000500C4u, 0x00000006u, 0x00000108u, 0x00000107u,
++  0x000000DFu, 0x0004003Du, 0x00000006u, 0x00000109u, 0x000000D5u, 0x000500C2u, 0x00000006u, 0x0000010Au,
++  0x00000109u, 0x000000DFu, 0x000500C5u, 0x00000006u, 0x0000010Bu, 0x00000108u, 0x0000010Au, 0x0003003Eu,
++  0x000000D5u, 0x0000010Bu, 0x000200F9u, 0x00000106u, 0x000200F8u, 0x00000106u, 0x00050041u, 0x00000007u,
++  0x0000010Du, 0x0000006Eu, 0x000000ABu, 0x0004003Du, 0x00000006u, 0x0000010Eu, 0x0000010Du, 0x00050041u,
++  0x00000078u, 0x0000010Fu, 0x00000077u, 0x0000003Eu, 0x0004003Du, 0x00000006u, 0x00000110u, 0x0000010Fu,
++  0x00050080u, 0x00000006u, 0x00000111u, 0x0000010Eu, 0x00000110u, 0x00050041u, 0x00000007u, 0x00000112u,
++  0x0000006Eu, 0x0000003Cu, 0x0004003Du, 0x00000006u, 0x00000113u, 0x00000112u, 0x00050041u, 0x00000078u,
++  0x00000114u, 0x00000077u, 0x0000001Au, 0x0004003Du, 0x00000006u, 0x00000115u, 0x00000114u, 0x00050080u,
++  0x00000006u, 0x00000116u, 0x00000113u, 0x00000115u, 0x0003003Eu, 0x00000117u, 0x00000111u, 0x0003003Eu,
++  0x00000118u, 0x00000116u, 0x00050041u, 0x00000078u, 0x0000011Au, 0x00000077u, 0x0000005Au, 0x0004003Du,
++  0x00000006u, 0x0000011Bu, 0x0000011Au, 0x0003003Eu, 0x00000119u, 0x0000011Bu, 0x00070039u, 0x00000006u,
++  0x0000011Cu, 0x0000000Cu, 0x00000117u, 0x00000118u, 0x00000119u, 0x0003003Eu, 0x0000010Cu, 0x0000011Cu,
++  0x0004003Du, 0x00000006u, 0x00000121u, 0x0000010Cu, 0x000500C2u, 0x00000006u, 0x00000122u, 0x00000121u,
++  0x0000002Bu, 0x0004003Du, 0x00000006u, 0x00000123u, 0x000000D5u, 0x00060041u, 0x00000124u, 0x00000125u,
++  0x00000120u, 0x00000068u, 0x00000122u, 0x0003003Eu, 0x00000125u, 0x00000123u, 0x000100FDu, 0x00010038u,
++  0x00050036u, 0x00000006u, 0x0000000Cu, 0x00000000u, 0x00000008u, 0x00030037u, 0x00000007u, 0x00000009u,
++  0x00030037u, 0x00000007u, 0x0000000Au, 0x00030037u, 0x00000007u, 0x0000000Bu, 0x000200F8u, 0x0000000Du,
++  0x0004003Bu, 0x00000007u, 0x00000018u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x00000024u, 0x00000007u,
++  0x0004003Bu, 0x00000007u, 0x0000002Fu, 0x00000007u, 0x0004003Du, 0x00000006u, 0x00000019u, 0x00000009u,
++  0x000500C2u, 0x00000006u, 0x0000001Bu, 0x00000019u, 0x0000001Au, 0x0004003Du, 0x00000006u, 0x0000001Cu,
++  0x0000000Au, 0x000500C2u, 0x00000006u, 0x0000001Du, 0x0000001Cu, 0x0000001Au, 0x0004003Du, 0x00000006u,
++  0x0000001Eu, 0x0000000Bu, 0x000500C2u, 0x00000006u, 0x0000001Fu, 0x0000001Eu, 0x0000001Au, 0x00050084u,
++  0x00000006u, 0x00000020u, 0x0000001Du, 0x0000001Fu, 0x00050080u, 0x00000006u, 0x00000021u, 0x0000001Bu,
++  0x00000020u, 0x000500C4u, 0x00000006u, 0x00000023u, 0x00000021u, 0x00000022u, 0x0003003Eu, 0x00000018u,
++  0x00000023u, 0x0004003Du, 0x00000006u, 0x00000025u, 0x00000009u, 0x000500C7u, 0x00000006u, 0x00000027u,
++  0x00000025u, 0x00000026u, 0x0004003Du, 0x00000006u, 0x00000028u, 0x0000000Au, 0x000500C7u, 0x00000006u,
++  0x0000002Au, 0x00000028u, 0x00000029u, 0x000500C4u, 0x00000006u, 0x0000002Cu, 0x0000002Au, 0x0000002Bu,
++  0x00050080u, 0x00000006u, 0x0000002Du, 0x00000027u, 0x0000002Cu, 0x000500C4u, 0x00000006u, 0x0000002Eu,
++  0x0000002Du, 0x0000002Bu, 0x0003003Eu, 0x00000024u, 0x0000002Eu, 0x0004003Du, 0x00000006u, 0x00000030u,
++  0x00000018u, 0x0004003Du, 0x00000006u, 0x00000031u, 0x00000024u, 0x000500C7u, 0x00000006u, 0x00000033u,
++  0x00000031u, 0x00000032u, 0x000500C4u, 0x00000006u, 0x00000035u, 0x00000033u, 0x00000034u, 0x00050080u,
++  0x00000006u, 0x00000036u, 0x00000030u, 0x00000035u, 0x0004003Du, 0x00000006u, 0x00000037u, 0x00000024u,
++  0x000500C7u, 0x00000006u, 0x00000039u, 0x00000037u, 0x00000038u, 0x00050080u, 0x00000006u, 0x0000003Au,
++  0x00000036u, 0x00000039u, 0x0004003Du, 0x00000006u, 0x0000003Bu, 0x0000000Au, 0x000500C7u, 0x00000006u,
++  0x0000003Du, 0x0000003Bu, 0x0000003Cu, 0x000500C4u, 0x00000006u, 0x0000003Fu, 0x0000003Du, 0x0000003Eu,
++  0x00050080u, 0x00000006u, 0x00000040u, 0x0000003Au, 0x0000003Fu, 0x0003003Eu, 0x0000002Fu, 0x00000040u,
++  0x0004003Du, 0x00000006u, 0x00000041u, 0x0000002Fu, 0x000500C7u, 0x00000006u, 0x00000043u, 0x00000041u,
++  0x00000042u, 0x000500C4u, 0x00000006u, 0x00000045u, 0x00000043u, 0x00000044u, 0x0004003Du, 0x00000006u,
++  0x00000046u, 0x0000000Au, 0x000500C7u, 0x00000006u, 0x00000048u, 0x00000046u, 0x00000047u, 0x000500C4u,
++  0x00000006u, 0x0000004Au, 0x00000048u, 0x00000049u, 0x00050080u, 0x00000006u, 0x0000004Bu, 0x00000045u,
++  0x0000004Au, 0x0004003Du, 0x00000006u, 0x0000004Cu, 0x0000002Fu, 0x000500C7u, 0x00000006u, 0x0000004Eu,
++  0x0000004Cu, 0x0000004Du, 0x000500C4u, 0x00000006u, 0x0000004Fu, 0x0000004Eu, 0x0000002Bu, 0x00050080u,
++  0x00000006u, 0x00000050u, 0x0000004Bu, 0x0000004Fu, 0x0004003Du, 0x00000006u, 0x00000051u, 0x0000000Au,
++  0x000500C7u, 0x00000006u, 0x00000053u, 0x00000051u, 0x00000052u, 0x000500C2u, 0x00000006u, 0x00000054u,
++  0x00000053u, 0x0000002Bu, 0x0004003Du, 0x00000006u, 0x00000055u, 0x00000009u, 0x000500C2u, 0x00000006u,
++  0x00000056u, 0x00000055u, 0x00000044u, 0x00050080u, 0x00000006u, 0x00000057u, 0x00000054u, 0x00000056u,
++  0x000500C7u, 0x00000006u, 0x00000059u, 0x00000057u, 0x00000058u, 0x000500C4u, 0x00000006u, 0x0000005Bu,
++  0x00000059u, 0x0000005Au, 0x00050080u, 0x00000006u, 0x0000005Cu, 0x00000050u, 0x0000005Bu, 0x0004003Du,
++  0x00000006u, 0x0000005Du, 0x0000002Fu, 0x000500C7u, 0x00000006u, 0x0000005Fu, 0x0000005Du, 0x0000005Eu,
++  0x00050080u, 0x00000006u, 0x00000060u, 0x0000005Cu, 0x0000005Fu, 0x000200FEu, 0x00000060u, 0x00010038u,
++  0x00050036u, 0x00000012u, 0x00000016u, 0x00000000u, 0x00000013u, 0x00030037u, 0x00000010u, 0x00000014u,
++  0x00030037u, 0x00000007u, 0x00000015u, 0x000200F8u, 0x00000017u, 0x0004003Du, 0x00000063u, 0x00000066u,
++  0x00000065u, 0x0004003Du, 0x0000000Fu, 0x00000067u, 0x00000014u, 0x0007005Fu, 0x00000012u, 0x00000069u,
++  0x00000066u, 0x00000067u, 0x00000002u, 0x00000068u, 0x000200FEu, 0x00000069u, 0x00010038u,
++};
++inline constexpr uint32_t kMultisampled[] = {
++  0x07230203u, 0x00010000u, 0x0008000Bu, 0x00000129u, 0x00000000u, 0x00020011u, 0x00000001u, 0x0006000Bu,
++  0x00000001u, 0x4C534C47u, 0x6474732Eu, 0x3035342Eu, 0x00000000u, 0x0003000Eu, 0x00000000u, 0x00000001u,
++  0x0006000Fu, 0x00000005u, 0x00000004u, 0x6E69616Du, 0x00000000u, 0x00000072u, 0x00060010u, 0x00000004u,
++  0x00000011u, 0x00000008u, 0x00000008u, 0x00000001u, 0x00030003u, 0x00000002u, 0x000001C2u, 0x000B0004u,
++  0x455F4C47u, 0x735F5458u, 0x6C706D61u, 0x656C7265u, 0x745F7373u, 0x75747865u, 0x665F6572u, 0x74636E75u,
++  0x736E6F69u, 0x00000000u, 0x00040005u, 0x00000004u, 0x6E69616Du, 0x00000000u, 0x00080005u, 0x0000000Cu,
++  0x656C6974u, 0x666F5F64u, 0x74657366u, 0x3B317528u, 0x753B3175u, 0x00003B31u, 0x00030005u, 0x00000009u,
++  0x00000078u, 0x00030005u, 0x0000000Au, 0x00000079u, 0x00040005u, 0x0000000Bu, 0x63746970u, 0x00000068u,
++  0x00070005u, 0x00000016u, 0x64616572u, 0x6D61735Fu, 0x28656C70u, 0x3B326976u, 0x003B3175u, 0x00030005u,
++  0x00000014u, 0x00000070u, 0x00040005u, 0x00000015u, 0x65646E69u, 0x00000078u, 0x00040005u, 0x00000018u,
++  0x7263616Du, 0x0000006Fu, 0x00040005u, 0x00000024u, 0x7263696Du, 0x0000006Fu, 0x00040005u, 0x0000002Fu,
++  0x7366666Fu, 0x00007465u, 0x00060005u, 0x00000065u, 0x72756F73u, 0x695F6563u, 0x6567616Du, 0x00000000u,
++  0x00030005u, 0x0000006Fu, 0x00736F70u, 0x00080005u, 0x00000072u, 0x475F6C67u, 0x61626F6Cu, 0x766E496Cu,
++  0x7461636Fu, 0x496E6F69u, 0x00000044u, 0x00040005u, 0x00000076u, 0x68737550u, 0x00000000u, 0x00060006u,
++  0x00000076u, 0x00000000u, 0x72756F73u, 0x785F6563u, 0x00000000u, 0x00060006u, 0x00000076u, 0x00000001u,
++  0x72756F73u, 0x795F6563u, 0x00000000u, 0x00050006u, 0x00000076u, 0x00000002u, 0x74646977u, 0x00000068u,
++  0x00050006u, 0x00000076u, 0x00000003u, 0x67696568u, 0x00007468u, 0x00050006u, 0x00000076u, 0x00000004u,
++  0x74736564u, 0x0000785Fu, 0x00050006u, 0x00000076u, 0x00000005u, 0x74736564u, 0x0000795Fu, 0x00060006u,
++  0x00000076u, 0x00000006u, 0x74736564u, 0x7469705Fu, 0x00006863u, 0x00050006u, 0x00000076u, 0x00000007u,
++  0x69646E65u, 0x00006E61u, 0x00050006u, 0x00000076u, 0x00000008u, 0x70617773u, 0x0062725Fu, 0x00070006u,
++  0x00000076u, 0x00000009u, 0x706D6173u, 0x665F656Cu, 0x74737269u, 0x00000000u, 0x00070006u, 0x00000076u,
++  0x0000000Au, 0x706D6173u, 0x735F656Cu, 0x6E6F6365u, 0x00000064u, 0x00070006u, 0x00000076u, 0x0000000Bu,
++  0x72657661u, 0x5F656761u, 0x706D6173u, 0x0073656Cu, 0x00030005u, 0x00000078u, 0x00006370u, 0x00040005u,
++  0x00000086u, 0x72756F73u, 0x00006563u, 0x00030005u, 0x00000092u, 0x00000061u, 0x00040005u, 0x00000093u,
++  0x61726170u, 0x0000006Du, 0x00040005u, 0x00000095u, 0x61726170u, 0x0000006Du, 0x00040005u, 0x000000A5u,
++  0x756C6176u, 0x00000065u, 0x00030005u, 0x000000B1u, 0x00000062u, 0x00040005u, 0x000000B3u, 0x61726170u,
++  0x0000006Du, 0x00040005u, 0x000000B5u, 0x61726170u, 0x0000006Du, 0x00040005u, 0x000000C6u, 0x61626772u,
++  0x00000000u, 0x00040005u, 0x000000D7u, 0x6B636170u, 0x00006465u, 0x00040005u, 0x0000010Eu, 0x72646461u,
++  0x00737365u, 0x00040005u, 0x00000119u, 0x61726170u, 0x0000006Du, 0x00040005u, 0x0000011Au, 0x61726170u,
++  0x0000006Du, 0x00040005u, 0x0000011Bu, 0x61726170u, 0x0000006Du, 0x00050005u, 0x00000120u, 0x74736544u,
++  0x74616E69u, 0x006E6F69u, 0x00050006u, 0x00000120u, 0x00000000u, 0x64726F77u, 0x00000073u, 0x00040005u,
++  0x00000122u, 0x74736564u, 0x00000000u, 0x00040047u, 0x00000065u, 0x00000021u, 0x00000000u, 0x00040047u,
++  0x00000065u, 0x00000022u, 0x00000001u, 0x00040047u, 0x00000072u, 0x0000000Bu, 0x0000001Cu, 0x00030047u,
++  0x00000076u, 0x00000002u, 0x00050048u, 0x00000076u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00050048u,
++  0x00000076u, 0x00000001u, 0x00000023u, 0x00000004u, 0x00050048u, 0x00000076u, 0x00000002u, 0x00000023u,
++  0x00000008u, 0x00050048u, 0x00000076u, 0x00000003u, 0x00000023u, 0x0000000Cu, 0x00050048u, 0x00000076u,
++  0x00000004u, 0x00000023u, 0x00000010u, 0x00050048u, 0x00000076u, 0x00000005u, 0x00000023u, 0x00000014u,
++  0x00050048u, 0x00000076u, 0x00000006u, 0x00000023u, 0x00000018u, 0x00050048u, 0x00000076u, 0x00000007u,
++  0x00000023u, 0x0000001Cu, 0x00050048u, 0x00000076u, 0x00000008u, 0x00000023u, 0x00000020u, 0x00050048u,
++  0x00000076u, 0x00000009u, 0x00000023u, 0x00000024u, 0x00050048u, 0x00000076u, 0x0000000Au, 0x00000023u,
++  0x00000028u, 0x00050048u, 0x00000076u, 0x0000000Bu, 0x00000023u, 0x0000002Cu, 0x00040047u, 0x0000011Fu,
++  0x00000006u, 0x00000004u, 0x00030047u, 0x00000120u, 0x00000003u, 0x00040048u, 0x00000120u, 0x00000000u,
++  0x00000019u, 0x00050048u, 0x00000120u, 0x00000000u, 0x00000023u, 0x00000000u, 0x00030047u, 0x00000122u,
++  0x00000019u, 0x00040047u, 0x00000122u, 0x00000021u, 0x00000000u, 0x00040047u, 0x00000122u, 0x00000022u,
++  0x00000000u, 0x00040047u, 0x00000128u, 0x0000000Bu, 0x00000019u, 0x00020013u, 0x00000002u, 0x00030021u,
++  0x00000003u, 0x00000002u, 0x00040015u, 0x00000006u, 0x00000020u, 0x00000000u, 0x00040020u, 0x00000007u,
++  0x00000007u, 0x00000006u, 0x00060021u, 0x00000008u, 0x00000006u, 0x00000007u, 0x00000007u, 0x00000007u,
++  0x00040015u, 0x0000000Eu, 0x00000020u, 0x00000001u, 0x00040017u, 0x0000000Fu, 0x0000000Eu, 0x00000002u,
++  0x00040020u, 0x00000010u, 0x00000007u, 0x0000000Fu, 0x00030016u, 0x00000011u, 0x00000020u, 0x00040017u,
++  0x00000012u, 0x00000011u, 0x00000004u, 0x00050021u, 0x00000013u, 0x00000012u, 0x00000010u, 0x00000007u,
++  0x0004002Bu, 0x0000000Eu, 0x0000001Au, 0x00000005u, 0x0004002Bu, 0x0000000Eu, 0x00000022u, 0x00000009u,
++  0x0004002Bu, 0x00000006u, 0x00000026u, 0x00000007u, 0x0004002Bu, 0x00000006u, 0x00000029u, 0x0000000Eu,
++  0x0004002Bu, 0x0000000Eu, 0x0000002Bu, 0x00000002u, 0x0004002Bu, 0x00000006u, 0x00000032u, 0xFFFFFFF0u,
++  0x0004002Bu, 0x0000000Eu, 0x00000034u, 0x00000001u, 0x0004002Bu, 0x00000006u, 0x00000038u, 0x0000000Fu,
++  0x0004002Bu, 0x00000006u, 0x0000003Cu, 0x00000001u, 0x0004002Bu, 0x0000000Eu, 0x0000003Eu, 0x00000004u,
++  0x0004002Bu, 0x00000006u, 0x00000042u, 0xFFFFFE00u, 0x0004002Bu, 0x0000000Eu, 0x00000044u, 0x00000003u,
++  0x0004002Bu, 0x00000006u, 0x00000047u, 0x00000010u, 0x0004002Bu, 0x0000000Eu, 0x00000049u, 0x00000007u,
++  0x0004002Bu, 0x00000006u, 0x0000004Du, 0x000001C0u, 0x0004002Bu, 0x00000006u, 0x00000052u, 0x00000008u,
++  0x0004002Bu, 0x00000006u, 0x00000058u, 0x00000003u, 0x0004002Bu, 0x0000000Eu, 0x0000005Au, 0x00000006u,
++  0x0004002Bu, 0x00000006u, 0x0000005Eu, 0x0000003Fu, 0x00090019u, 0x00000063u, 0x00000011u, 0x00000001u,
++  0x00000000u, 0x00000000u, 0x00000001u, 0x00000001u, 0x00000000u, 0x00040020u, 0x00000064u, 0x00000000u,
++  0x00000063u, 0x0004003Bu, 0x00000064u, 0x00000065u, 0x00000000u, 0x00040017u, 0x0000006Du, 0x00000006u,
++  0x00000002u, 0x00040020u, 0x0000006Eu, 0x00000007u, 0x0000006Du, 0x00040017u, 0x00000070u, 0x00000006u,
++  0x00000003u, 0x00040020u, 0x00000071u, 0x00000001u, 0x00000070u, 0x0004003Bu, 0x00000071u, 0x00000072u,
++  0x00000001u, 0x000E001Eu, 0x00000076u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u,
++  0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00000006u, 0x00040020u,
++  0x00000077u, 0x00000009u, 0x00000076u, 0x0004003Bu, 0x00000077u, 0x00000078u, 0x00000009u, 0x00040020u,
++  0x00000079u, 0x00000009u, 0x00000006u, 0x00020014u, 0x0000007Fu, 0x00040017u, 0x00000080u, 0x0000007Fu,
++  0x00000002u, 0x0004002Bu, 0x0000000Eu, 0x00000088u, 0x00000000u, 0x00040017u, 0x00000090u, 0x00000006u,
++  0x00000004u, 0x00040020u, 0x00000091u, 0x00000007u, 0x00000090u, 0x0004002Bu, 0x00000011u, 0x00000099u,
++  0x00000000u, 0x0004002Bu, 0x00000011u, 0x0000009Au, 0x3F800000u, 0x0004002Bu, 0x00000011u, 0x0000009Eu,
++  0x437F0000u, 0x0004002Bu, 0x00000011u, 0x000000A0u, 0x3F000000u, 0x00040020u, 0x000000A4u, 0x00000007u,
++  0x00000012u, 0x0004002Bu, 0x00000011u, 0x000000A8u, 0x3B808081u, 0x0004002Bu, 0x0000000Eu, 0x000000AAu,
++  0x0000000Bu, 0x0004002Bu, 0x00000006u, 0x000000ADu, 0x00000000u, 0x0004002Bu, 0x0000000Eu, 0x000000B2u,
++  0x0000000Au, 0x0004002Bu, 0x0000000Eu, 0x000000CFu, 0x00000008u, 0x0004002Bu, 0x00000006u, 0x000000DEu,
++  0x00000002u, 0x0004002Bu, 0x0000000Eu, 0x000000E1u, 0x00000010u, 0x0004002Bu, 0x0000000Eu, 0x000000E6u,
++  0x00000018u, 0x0004002Bu, 0x00000006u, 0x000000F6u, 0x00FF00FFu, 0x0003001Du, 0x0000011Fu, 0x00000006u,
++  0x0003001Eu, 0x00000120u, 0x0000011Fu, 0x00040020u, 0x00000121u, 0x00000002u, 0x00000120u, 0x0004003Bu,
++  0x00000121u, 0x00000122u, 0x00000002u, 0x00040020u, 0x00000126u, 0x00000002u, 0x00000006u, 0x0006002Cu,
++  0x00000070u, 0x00000128u, 0x00000052u, 0x00000052u, 0x0000003Cu, 0x00050036u, 0x00000002u, 0x00000004u,
++  0x00000000u, 0x00000003u, 0x000200F8u, 0x00000005u, 0x0004003Bu, 0x0000006Eu, 0x0000006Fu, 0x00000007u,
++  0x0004003Bu, 0x00000010u, 0x00000086u, 0x00000007u, 0x0004003Bu, 0x00000091u, 0x00000092u, 0x00000007u,
++  0x0004003Bu, 0x00000010u, 0x00000093u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x00000095u, 0x00000007u,
++  0x0004003Bu, 0x000000A4u, 0x000000A5u, 0x00000007u, 0x0004003Bu, 0x00000091u, 0x000000B1u, 0x00000007u,
++  0x0004003Bu, 0x00000010u, 0x000000B3u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x000000B5u, 0x00000007u,
++  0x0004003Bu, 0x00000091u, 0x000000C6u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x000000D7u, 0x00000007u,
++  0x0004003Bu, 0x00000007u, 0x0000010Eu, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x00000119u, 0x00000007u,
++  0x0004003Bu, 0x00000007u, 0x0000011Au, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x0000011Bu, 0x00000007u,
++  0x0004003Du, 0x00000070u, 0x00000073u, 0x00000072u, 0x0007004Fu, 0x0000006Du, 0x00000074u, 0x00000073u,
++  0x00000073u, 0x00000000u, 0x00000001u, 0x0003003Eu, 0x0000006Fu, 0x00000074u, 0x0004003Du, 0x0000006Du,
++  0x00000075u, 0x0000006Fu, 0x00050041u, 0x00000079u, 0x0000007Au, 0x00000078u, 0x0000002Bu, 0x0004003Du,
++  0x00000006u, 0x0000007Bu, 0x0000007Au, 0x00050041u, 0x00000079u, 0x0000007Cu, 0x00000078u, 0x00000044u,
++  0x0004003Du, 0x00000006u, 0x0000007Du, 0x0000007Cu, 0x00050050u, 0x0000006Du, 0x0000007Eu, 0x0000007Bu,
++  0x0000007Du, 0x000500AEu, 0x00000080u, 0x00000081u, 0x00000075u, 0x0000007Eu, 0x0004009Au, 0x0000007Fu,
++  0x00000082u, 0x00000081u, 0x000300F7u, 0x00000084u, 0x00000000u, 0x000400FAu, 0x00000082u, 0x00000083u,
++  0x00000084u, 0x000200F8u, 0x00000083u, 0x000100FDu, 0x000200F8u, 0x00000084u, 0x0004003Du, 0x0000006Du,
++  0x00000087u, 0x0000006Fu, 0x00050041u, 0x00000079u, 0x00000089u, 0x00000078u, 0x00000088u, 0x0004003Du,
++  0x00000006u, 0x0000008Au, 0x00000089u, 0x00050041u, 0x00000079u, 0x0000008Bu, 0x00000078u, 0x00000034u,
++  0x0004003Du, 0x00000006u, 0x0000008Cu, 0x0000008Bu, 0x00050050u, 0x0000006Du, 0x0000008Du, 0x0000008Au,
++  0x0000008Cu, 0x00050080u, 0x0000006Du, 0x0000008Eu, 0x00000087u, 0x0000008Du, 0x0004007Cu, 0x0000000Fu,
++  0x0000008Fu, 0x0000008Eu, 0x0003003Eu, 0x00000086u, 0x0000008Fu, 0x0004003Du, 0x0000000Fu, 0x00000094u,
++  0x00000086u, 0x0003003Eu, 0x00000093u, 0x00000094u, 0x00050041u, 0x00000079u, 0x00000096u, 0x00000078u,
++  0x00000022u, 0x0004003Du, 0x00000006u, 0x00000097u, 0x00000096u, 0x0003003Eu, 0x00000095u, 0x00000097u,
++  0x00060039u, 0x00000012u, 0x00000098u, 0x00000016u, 0x00000093u, 0x00000095u, 0x00070050u, 0x00000012u,
++  0x0000009Bu, 0x00000099u, 0x00000099u, 0x00000099u, 0x00000099u, 0x00070050u, 0x00000012u, 0x0000009Cu,
++  0x0000009Au, 0x0000009Au, 0x0000009Au, 0x0000009Au, 0x0008000Cu, 0x00000012u, 0x0000009Du, 0x00000001u,
++  0x0000002Bu, 0x00000098u, 0x0000009Bu, 0x0000009Cu, 0x0005008Eu, 0x00000012u, 0x0000009Fu, 0x0000009Du,
++  0x0000009Eu, 0x00070050u, 0x00000012u, 0x000000A1u, 0x000000A0u, 0x000000A0u, 0x000000A0u, 0x000000A0u,
++  0x00050081u, 0x00000012u, 0x000000A2u, 0x0000009Fu, 0x000000A1u, 0x0004006Du, 0x00000090u, 0x000000A3u,
++  0x000000A2u, 0x0003003Eu, 0x00000092u, 0x000000A3u, 0x0004003Du, 0x00000090u, 0x000000A6u, 0x00000092u,
++  0x00040070u, 0x00000012u, 0x000000A7u, 0x000000A6u, 0x0005008Eu, 0x00000012u, 0x000000A9u, 0x000000A7u,
++  0x000000A8u, 0x0003003Eu, 0x000000A5u, 0x000000A9u, 0x00050041u, 0x00000079u, 0x000000ABu, 0x00000078u,
++  0x000000AAu, 0x0004003Du, 0x00000006u, 0x000000ACu, 0x000000ABu, 0x000500ABu, 0x0000007Fu, 0x000000AEu,
++  0x000000ACu, 0x000000ADu, 0x000300F7u, 0x000000B0u, 0x00000000u, 0x000400FAu, 0x000000AEu, 0x000000AFu,
++  0x000000B0u, 0x000200F8u, 0x000000AFu, 0x0004003Du, 0x0000000Fu, 0x000000B4u, 0x00000086u, 0x0003003Eu,
++  0x000000B3u, 0x000000B4u, 0x00050041u, 0x00000079u, 0x000000B6u, 0x00000078u, 0x000000B2u, 0x0004003Du,
++  0x00000006u, 0x000000B7u, 0x000000B6u, 0x0003003Eu, 0x000000B5u, 0x000000B7u, 0x00060039u, 0x00000012u,
++  0x000000B8u, 0x00000016u, 0x000000B3u, 0x000000B5u, 0x00070050u, 0x00000012u, 0x000000B9u, 0x00000099u,
++  0x00000099u, 0x00000099u, 0x00000099u, 0x00070050u, 0x00000012u, 0x000000BAu, 0x0000009Au, 0x0000009Au,
++  0x0000009Au, 0x0000009Au, 0x0008000Cu, 0x00000012u, 0x000000BBu, 0x00000001u, 0x0000002Bu, 0x000000B8u,
++  0x000000B9u, 0x000000BAu, 0x0005008Eu, 0x00000012u, 0x000000BCu, 0x000000BBu, 0x0000009Eu, 0x00070050u,
++  0x00000012u, 0x000000BDu, 0x000000A0u, 0x000000A0u, 0x000000A0u, 0x000000A0u, 0x00050081u, 0x00000012u,
++  0x000000BEu, 0x000000BCu, 0x000000BDu, 0x0004006Du, 0x00000090u, 0x000000BFu, 0x000000BEu, 0x0003003Eu,
++  0x000000B1u, 0x000000BFu, 0x0004003Du, 0x00000012u, 0x000000C0u, 0x000000A5u, 0x0004003Du, 0x00000090u,
++  0x000000C1u, 0x000000B1u, 0x00040070u, 0x00000012u, 0x000000C2u, 0x000000C1u, 0x0005008Eu, 0x00000012u,
++  0x000000C3u, 0x000000C2u, 0x000000A8u, 0x00050081u, 0x00000012u, 0x000000C4u, 0x000000C0u, 0x000000C3u,
++  0x0005008Eu, 0x00000012u, 0x000000C5u, 0x000000C4u, 0x000000A0u, 0x0003003Eu, 0x000000A5u, 0x000000C5u,
++  0x000200F9u, 0x000000B0u, 0x000200F8u, 0x000000B0u, 0x0004003Du, 0x00000012u, 0x000000C7u, 0x000000A5u,
++  0x00070050u, 0x00000012u, 0x000000C8u, 0x00000099u, 0x00000099u, 0x00000099u, 0x00000099u, 0x00070050u,
++  0x00000012u, 0x000000C9u, 0x0000009Au, 0x0000009Au, 0x0000009Au, 0x0000009Au, 0x0008000Cu, 0x00000012u,
++  0x000000CAu, 0x00000001u, 0x0000002Bu, 0x000000C7u, 0x000000C8u, 0x000000C9u, 0x0005008Eu, 0x00000012u,
++  0x000000CBu, 0x000000CAu, 0x0000009Eu, 0x00070050u, 0x00000012u, 0x000000CCu, 0x000000A0u, 0x000000A0u,
++  0x000000A0u, 0x000000A0u, 0x00050081u, 0x00000012u, 0x000000CDu, 0x000000CBu, 0x000000CCu, 0x0004006Du,
++  0x00000090u, 0x000000CEu, 0x000000CDu, 0x0003003Eu, 0x000000C6u, 0x000000CEu, 0x00050041u, 0x00000079u,
++  0x000000D0u, 0x00000078u, 0x000000CFu, 0x0004003Du, 0x00000006u, 0x000000D1u, 0x000000D0u, 0x000500ABu,
++  0x0000007Fu, 0x000000D2u, 0x000000D1u, 0x000000ADu, 0x000300F7u, 0x000000D4u, 0x00000000u, 0x000400FAu,
++  0x000000D2u, 0x000000D3u, 0x000000D4u, 0x000200F8u, 0x000000D3u, 0x0004003Du, 0x00000090u, 0x000000D5u,
++  0x000000C6u, 0x0009004Fu, 0x00000090u, 0x000000D6u, 0x000000D5u, 0x000000D5u, 0x00000002u, 0x00000001u,
++  0x00000000u, 0x00000003u, 0x0003003Eu, 0x000000C6u, 0x000000D6u, 0x000200F9u, 0x000000D4u, 0x000200F8u,
++  0x000000D4u, 0x00050041u, 0x00000007u, 0x000000D8u, 0x000000C6u, 0x000000ADu, 0x0004003Du, 0x00000006u,
++  0x000000D9u, 0x000000D8u, 0x00050041u, 0x00000007u, 0x000000DAu, 0x000000C6u, 0x0000003Cu, 0x0004003Du,
++  0x00000006u, 0x000000DBu, 0x000000DAu, 0x000500C4u, 0x00000006u, 0x000000DCu, 0x000000DBu, 0x000000CFu,
++  0x000500C5u, 0x00000006u, 0x000000DDu, 0x000000D9u, 0x000000DCu, 0x00050041u, 0x00000007u, 0x000000DFu,
++  0x000000C6u, 0x000000DEu, 0x0004003Du, 0x00000006u, 0x000000E0u, 0x000000DFu, 0x000500C4u, 0x00000006u,
++  0x000000E2u, 0x000000E0u, 0x000000E1u, 0x000500C5u, 0x00000006u, 0x000000E3u, 0x000000DDu, 0x000000E2u,
++  0x00050041u, 0x00000007u, 0x000000E4u, 0x000000C6u, 0x00000058u, 0x0004003Du, 0x00000006u, 0x000000E5u,
++  0x000000E4u, 0x000500C4u, 0x00000006u, 0x000000E7u, 0x000000E5u, 0x000000E6u, 0x000500C5u, 0x00000006u,
++  0x000000E8u, 0x000000E3u, 0x000000E7u, 0x0003003Eu, 0x000000D7u, 0x000000E8u, 0x00050041u, 0x00000079u,
++  0x000000E9u, 0x00000078u, 0x00000049u, 0x0004003Du, 0x00000006u, 0x000000EAu, 0x000000E9u, 0x000500AAu,
++  0x0000007Fu, 0x000000EBu, 0x000000EAu, 0x0000003Cu, 0x000400A8u, 0x0000007Fu, 0x000000ECu, 0x000000EBu,
++  0x000300F7u, 0x000000EEu, 0x00000000u, 0x000400FAu, 0x000000ECu, 0x000000EDu, 0x000000EEu, 0x000200F8u,
++  0x000000EDu, 0x00050041u, 0x00000079u, 0x000000EFu, 0x00000078u, 0x00000049u, 0x0004003Du, 0x00000006u,
++  0x000000F0u, 0x000000EFu, 0x000500AAu, 0x0000007Fu, 0x000000F1u, 0x000000F0u, 0x000000DEu, 0x000200F9u,
++  0x000000EEu, 0x000200F8u, 0x000000EEu, 0x000700F5u, 0x0000007Fu, 0x000000F2u, 0x000000EBu, 0x000000D4u,
++  0x000000F1u, 0x000000EDu, 0x000300F7u, 0x000000F4u, 0x00000000u, 0x000400FAu, 0x000000F2u, 0x000000F3u,
++  0x000000F4u, 0x000200F8u, 0x000000F3u, 0x0004003Du, 0x00000006u, 0x000000F5u, 0x000000D7u, 0x000500C7u,
++  0x00000006u, 0x000000F7u, 0x000000F5u, 0x000000F6u, 0x000500C4u, 0x00000006u, 0x000000F8u, 0x000000F7u,
++  0x000000CFu, 0x0004003Du, 0x00000006u, 0x000000F9u, 0x000000D7u, 0x000500C2u, 0x00000006u, 0x000000FAu,
++  0x000000F9u, 0x000000CFu, 0x000500C7u, 0x00000006u, 0x000000FBu, 0x000000FAu, 0x000000F6u, 0x000500C5u,
++  0x00000006u, 0x000000FCu, 0x000000F8u, 0x000000FBu, 0x0003003Eu, 0x000000D7u, 0x000000FCu, 0x000200F9u,
++  0x000000F4u, 0x000200F8u, 0x000000F4u, 0x00050041u, 0x00000079u, 0x000000FDu, 0x00000078u, 0x00000049u,
++  0x0004003Du, 0x00000006u, 0x000000FEu, 0x000000FDu, 0x000500AAu, 0x0000007Fu, 0x000000FFu, 0x000000FEu,
++  0x000000DEu, 0x000400A8u, 0x0000007Fu, 0x00000100u, 0x000000FFu, 0x000300F7u, 0x00000102u, 0x00000000u,
++  0x000400FAu, 0x00000100u, 0x00000101u, 0x00000102u, 0x000200F8u, 0x00000101u, 0x00050041u, 0x00000079u,
++  0x00000103u, 0x00000078u, 0x00000049u, 0x0004003Du, 0x00000006u, 0x00000104u, 0x00000103u, 0x000500AAu,
++  0x0000007Fu, 0x00000105u, 0x00000104u, 0x00000058u, 0x000200F9u, 0x00000102u, 0x000200F8u, 0x00000102u,
++  0x000700F5u, 0x0000007Fu, 0x00000106u, 0x000000FFu, 0x000000F4u, 0x00000105u, 0x00000101u, 0x000300F7u,
++  0x00000108u, 0x00000000u, 0x000400FAu, 0x00000106u, 0x00000107u, 0x00000108u, 0x000200F8u, 0x00000107u,
++  0x0004003Du, 0x00000006u, 0x00000109u, 0x000000D7u, 0x000500C4u, 0x00000006u, 0x0000010Au, 0x00000109u,
++  0x000000E1u, 0x0004003Du, 0x00000006u, 0x0000010Bu, 0x000000D7u, 0x000500C2u, 0x00000006u, 0x0000010Cu,
++  0x0000010Bu, 0x000000E1u, 0x000500C5u, 0x00000006u, 0x0000010Du, 0x0000010Au, 0x0000010Cu, 0x0003003Eu,
++  0x000000D7u, 0x0000010Du, 0x000200F9u, 0x00000108u, 0x000200F8u, 0x00000108u, 0x00050041u, 0x00000007u,
++  0x0000010Fu, 0x0000006Fu, 0x000000ADu, 0x0004003Du, 0x00000006u, 0x00000110u, 0x0000010Fu, 0x00050041u,
++  0x00000079u, 0x00000111u, 0x00000078u, 0x0000003Eu, 0x0004003Du, 0x00000006u, 0x00000112u, 0x00000111u,
++  0x00050080u, 0x00000006u, 0x00000113u, 0x00000110u, 0x00000112u, 0x00050041u, 0x00000007u, 0x00000114u,
++  0x0000006Fu, 0x0000003Cu, 0x0004003Du, 0x00000006u, 0x00000115u, 0x00000114u, 0x00050041u, 0x00000079u,
++  0x00000116u, 0x00000078u, 0x0000001Au, 0x0004003Du, 0x00000006u, 0x00000117u, 0x00000116u, 0x00050080u,
++  0x00000006u, 0x00000118u, 0x00000115u, 0x00000117u, 0x0003003Eu, 0x00000119u, 0x00000113u, 0x0003003Eu,
++  0x0000011Au, 0x00000118u, 0x00050041u, 0x00000079u, 0x0000011Cu, 0x00000078u, 0x0000005Au, 0x0004003Du,
++  0x00000006u, 0x0000011Du, 0x0000011Cu, 0x0003003Eu, 0x0000011Bu, 0x0000011Du, 0x00070039u, 0x00000006u,
++  0x0000011Eu, 0x0000000Cu, 0x00000119u, 0x0000011Au, 0x0000011Bu, 0x0003003Eu, 0x0000010Eu, 0x0000011Eu,
++  0x0004003Du, 0x00000006u, 0x00000123u, 0x0000010Eu, 0x000500C2u, 0x00000006u, 0x00000124u, 0x00000123u,
++  0x0000002Bu, 0x0004003Du, 0x00000006u, 0x00000125u, 0x000000D7u, 0x00060041u, 0x00000126u, 0x00000127u,
++  0x00000122u, 0x00000088u, 0x00000124u, 0x0003003Eu, 0x00000127u, 0x00000125u, 0x000100FDu, 0x00010038u,
++  0x00050036u, 0x00000006u, 0x0000000Cu, 0x00000000u, 0x00000008u, 0x00030037u, 0x00000007u, 0x00000009u,
++  0x00030037u, 0x00000007u, 0x0000000Au, 0x00030037u, 0x00000007u, 0x0000000Bu, 0x000200F8u, 0x0000000Du,
++  0x0004003Bu, 0x00000007u, 0x00000018u, 0x00000007u, 0x0004003Bu, 0x00000007u, 0x00000024u, 0x00000007u,
++  0x0004003Bu, 0x00000007u, 0x0000002Fu, 0x00000007u, 0x0004003Du, 0x00000006u, 0x00000019u, 0x00000009u,
++  0x000500C2u, 0x00000006u, 0x0000001Bu, 0x00000019u, 0x0000001Au, 0x0004003Du, 0x00000006u, 0x0000001Cu,
++  0x0000000Au, 0x000500C2u, 0x00000006u, 0x0000001Du, 0x0000001Cu, 0x0000001Au, 0x0004003Du, 0x00000006u,
++  0x0000001Eu, 0x0000000Bu, 0x000500C2u, 0x00000006u, 0x0000001Fu, 0x0000001Eu, 0x0000001Au, 0x00050084u,
++  0x00000006u, 0x00000020u, 0x0000001Du, 0x0000001Fu, 0x00050080u, 0x00000006u, 0x00000021u, 0x0000001Bu,
++  0x00000020u, 0x000500C4u, 0x00000006u, 0x00000023u, 0x00000021u, 0x00000022u, 0x0003003Eu, 0x00000018u,
++  0x00000023u, 0x0004003Du, 0x00000006u, 0x00000025u, 0x00000009u, 0x000500C7u, 0x00000006u, 0x00000027u,
++  0x00000025u, 0x00000026u, 0x0004003Du, 0x00000006u, 0x00000028u, 0x0000000Au, 0x000500C7u, 0x00000006u,
++  0x0000002Au, 0x00000028u, 0x00000029u, 0x000500C4u, 0x00000006u, 0x0000002Cu, 0x0000002Au, 0x0000002Bu,
++  0x00050080u, 0x00000006u, 0x0000002Du, 0x00000027u, 0x0000002Cu, 0x000500C4u, 0x00000006u, 0x0000002Eu,
++  0x0000002Du, 0x0000002Bu, 0x0003003Eu, 0x00000024u, 0x0000002Eu, 0x0004003Du, 0x00000006u, 0x00000030u,
++  0x00000018u, 0x0004003Du, 0x00000006u, 0x00000031u, 0x00000024u, 0x000500C7u, 0x00000006u, 0x00000033u,
++  0x00000031u, 0x00000032u, 0x000500C4u, 0x00000006u, 0x00000035u, 0x00000033u, 0x00000034u, 0x00050080u,
++  0x00000006u, 0x00000036u, 0x00000030u, 0x00000035u, 0x0004003Du, 0x00000006u, 0x00000037u, 0x00000024u,
++  0x000500C7u, 0x00000006u, 0x00000039u, 0x00000037u, 0x00000038u, 0x00050080u, 0x00000006u, 0x0000003Au,
++  0x00000036u, 0x00000039u, 0x0004003Du, 0x00000006u, 0x0000003Bu, 0x0000000Au, 0x000500C7u, 0x00000006u,
++  0x0000003Du, 0x0000003Bu, 0x0000003Cu, 0x000500C4u, 0x00000006u, 0x0000003Fu, 0x0000003Du, 0x0000003Eu,
++  0x00050080u, 0x00000006u, 0x00000040u, 0x0000003Au, 0x0000003Fu, 0x0003003Eu, 0x0000002Fu, 0x00000040u,
++  0x0004003Du, 0x00000006u, 0x00000041u, 0x0000002Fu, 0x000500C7u, 0x00000006u, 0x00000043u, 0x00000041u,
++  0x00000042u, 0x000500C4u, 0x00000006u, 0x00000045u, 0x00000043u, 0x00000044u, 0x0004003Du, 0x00000006u,
++  0x00000046u, 0x0000000Au, 0x000500C7u, 0x00000006u, 0x00000048u, 0x00000046u, 0x00000047u, 0x000500C4u,
++  0x00000006u, 0x0000004Au, 0x00000048u, 0x00000049u, 0x00050080u, 0x00000006u, 0x0000004Bu, 0x00000045u,
++  0x0000004Au, 0x0004003Du, 0x00000006u, 0x0000004Cu, 0x0000002Fu, 0x000500C7u, 0x00000006u, 0x0000004Eu,
++  0x0000004Cu, 0x0000004Du, 0x000500C4u, 0x00000006u, 0x0000004Fu, 0x0000004Eu, 0x0000002Bu, 0x00050080u,
++  0x00000006u, 0x00000050u, 0x0000004Bu, 0x0000004Fu, 0x0004003Du, 0x00000006u, 0x00000051u, 0x0000000Au,
++  0x000500C7u, 0x00000006u, 0x00000053u, 0x00000051u, 0x00000052u, 0x000500C2u, 0x00000006u, 0x00000054u,
++  0x00000053u, 0x0000002Bu, 0x0004003Du, 0x00000006u, 0x00000055u, 0x00000009u, 0x000500C2u, 0x00000006u,
++  0x00000056u, 0x00000055u, 0x00000044u, 0x00050080u, 0x00000006u, 0x00000057u, 0x00000054u, 0x00000056u,
++  0x000500C7u, 0x00000006u, 0x00000059u, 0x00000057u, 0x00000058u, 0x000500C4u, 0x00000006u, 0x0000005Bu,
++  0x00000059u, 0x0000005Au, 0x00050080u, 0x00000006u, 0x0000005Cu, 0x00000050u, 0x0000005Bu, 0x0004003Du,
++  0x00000006u, 0x0000005Du, 0x0000002Fu, 0x000500C7u, 0x00000006u, 0x0000005Fu, 0x0000005Du, 0x0000005Eu,
++  0x00050080u, 0x00000006u, 0x00000060u, 0x0000005Cu, 0x0000005Fu, 0x000200FEu, 0x00000060u, 0x00010038u,
++  0x00050036u, 0x00000012u, 0x00000016u, 0x00000000u, 0x00000013u, 0x00030037u, 0x00000010u, 0x00000014u,
++  0x00030037u, 0x00000007u, 0x00000015u, 0x000200F8u, 0x00000017u, 0x0004003Du, 0x00000063u, 0x00000066u,
++  0x00000065u, 0x0004003Du, 0x0000000Fu, 0x00000067u, 0x00000014u, 0x0004003Du, 0x00000006u, 0x00000068u,
++  0x00000015u, 0x0004007Cu, 0x0000000Eu, 0x00000069u, 0x00000068u, 0x0007005Fu, 0x00000012u, 0x0000006Au,
++  0x00000066u, 0x00000067u, 0x00000040u, 0x00000069u, 0x000200FEu, 0x0000006Au, 0x00010038u,
++};
++}

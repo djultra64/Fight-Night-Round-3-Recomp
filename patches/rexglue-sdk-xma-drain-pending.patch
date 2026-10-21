@@ -1,0 +1,15 @@
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -135,7 +135,10 @@ bool XmaContext::Work() {
+     Decode(&data);
+     Consume(&output_rb, &data);
+ 
+-    if (!data.IsAnyInputBufferValid() || data.error_status == 4) {
++    // Exhausted input may still leave a decoded frame partially consumed.
++    // The guest cannot re-enable us until that PCM has reached the ring.
++    if ((!data.IsAnyInputBufferValid() && current_frame_remaining_subframes_ == 0) ||
++        data.error_status == 4) {
+       break;
+     }
+   }

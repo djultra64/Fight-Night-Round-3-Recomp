@@ -1,0 +1,24 @@
+diff --git a/src/graphics/command_processor.cpp b/src/graphics/command_processor.cpp
+index a744375..f5cd700 100644
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -637,7 +637,8 @@ void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
+   SCOPE_profile_cpu_f("gpu");
+ 
+   // Execute commands!
+-  memory::RingBuffer reader(memory_->TranslatePhysical(ptr), count * sizeof(uint32_t));
++  // Keep write_offset distinct from read_offset when the stream is full.
++  memory::RingBuffer reader(memory_->TranslatePhysical(ptr), count * sizeof(uint32_t) + 4);
+   reader.set_write_offset(count * sizeof(uint32_t));
+   do {
+     if (!ExecutePacket(&reader)) {
+@@ -651,7 +652,8 @@ void CommandProcessor::ExecuteIndirectBuffer(uint32_t ptr, uint32_t count) {
+ 
+ void CommandProcessor::ExecutePacket(uint32_t ptr, uint32_t count) {
+   // Execute commands!
+-  memory::RingBuffer reader(memory_->TranslatePhysical(ptr), count * sizeof(uint32_t));
++  // Keep write_offset distinct from read_offset when the stream is full.
++  memory::RingBuffer reader(memory_->TranslatePhysical(ptr), count * sizeof(uint32_t) + 4);
+   reader.set_write_offset(count * sizeof(uint32_t));
+   do {
+     if (!ExecutePacket(&reader)) {

@@ -1,0 +1,71 @@
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -18,6 +18,9 @@
+ #endif
+ #include <cstdint>
+ #include <utility>
++#include <filesystem>
++#include <fstream>
++#include <unordered_set>
+ 
+ #include <rex/assert.h>
+ #include <rex/chrono/clock.h>
+@@ -31,6 +34,8 @@
+ #include <rex/graphics/xenos.h>
+ #include <rex/logging.h>
+ #include <rex/math.h>
++
++REXCVAR_DEFINE_STRING(fnr3_glyph_diagnostic_root, "", "Port/Diagnostics", "Bounded native glyph texture evidence directory");
+ 
+ REXCVAR_DEFINE_UINT32(fnr3_native_glyph_abi, 1, "Port/Capabilities", "Native glyph cache bridge ABI").lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+@@ -477,6 +482,49 @@
+ }
+ void TextureCache::ApplyFNR3GlyphKey(TextureKey& key) {
+   auto* bridge = FNR3GlyphBridge();
++  // Diagnostic-only: never search guest memory. Read solely the actual bounded
++  // source allocation for the first 48 unique small live texture fetches.
++  // Existing texture layout owns the byte extent; no speculative 16K reads.
++  const auto& diagnostic_root = REXCVAR_GET(fnr3_glyph_diagnostic_root);
++  if (!diagnostic_root.empty()) {
++    static bool printed_bridge = false;
++    if (!printed_bridge) {
++      printed_bridge = true;
++      REXGPU_WARN("FNR3_GLYPH_DIAG bridge_ready={} bridge_count={}", bridge != nullptr, bridge ? bridge->count : 0);
++    }
++    static std::unordered_set<uint64_t> diagnostic_seen;
++    if (key.is_valid && key.dimension == xenos::DataDimension::k2DOrStacked &&
++        !key.depth_or_array_size_minus_1 && key.width_minus_1 < 257 && key.height_minus_1 < 257 &&
++        key.base_page && diagnostic_seen.size() < 48) {
++      const uint64_t identity = uint64_t(key.base_page) | (uint64_t(key.width_minus_1) << 17) |
++        (uint64_t(key.height_minus_1) << 30) | (uint64_t(key.format) << 43) | (uint64_t(key.tiled) << 49) |
++        (uint64_t(key.mip_max_level) << 50);
++      if (diagnostic_seen.emplace(identity).second) {
++        auto* original = FindOrCreateTexture(key);
++        const uint32_t size = original ? original->GetGuestBaseSize() : 0;
++        const uint32_t address = key.base_page << 12;
++        REXGPU_WARN("FNR3_GLYPH_DIAG sample={} base={:08X} size={} width={} height={} pitch={} format={} endian={} tiled={} mips={} packed={} bridge={}",
++          diagnostic_seen.size()-1, address, size, uint32_t(key.width_minus_1)+1, uint32_t(key.height_minus_1)+1,
++          uint32_t(key.pitch), uint32_t(key.format), uint32_t(key.endianness), uint32_t(key.tiled),
++          uint32_t(key.mip_max_level), uint32_t(key.packed_mips), bridge != nullptr);
++        if (size && size <= 1024*1024 && uint64_t(address)+size <= 0x20000000ull) {
++          try {
++            std::filesystem::create_directories(diagnostic_root);
++            const auto base = std::filesystem::path(diagnostic_root) / ("texture-"+std::to_string(diagnostic_seen.size()-1));
++            const auto* bytes = shared_memory().memory().TranslatePhysical(address);
++            std::ofstream binary(base.string()+".bin", std::ios::binary);
++            binary.write(reinterpret_cast<const char*>(bytes), size);
++            std::ofstream metadata(base.string()+".json");
++            metadata << "{\"base\":" << address << ",\"size\":" << size
++              << ",\"width\":" << uint32_t(key.width_minus_1)+1 << ",\"height\":" << uint32_t(key.height_minus_1)+1
++              << ",\"pitch\":" << uint32_t(key.pitch) << ",\"format\":" << uint32_t(key.format)
++              << ",\"endian\":" << uint32_t(key.endianness) << ",\"tiled\":" << uint32_t(key.tiled)
++              << ",\"mips\":" << uint32_t(key.mip_max_level) << ",\"packed\":" << uint32_t(key.packed_mips) << "}\n";
++          } catch (const std::exception& e) { REXGPU_WARN("FNR3_GLYPH_DIAG write failed: {}", e.what()); }
++        }
++      }
++    }
++  }
+   if (!bridge || !key.is_valid || key.dimension != xenos::DataDimension::k2DOrStacked ||
+       (key.width_minus_1 != 31 && key.width_minus_1 != 63 && key.width_minus_1 != 127) ||
+       key.height_minus_1 != key.width_minus_1 || !key.tiled ||

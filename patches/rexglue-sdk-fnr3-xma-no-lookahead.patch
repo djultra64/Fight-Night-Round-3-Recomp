@@ -1,0 +1,110 @@
+diff --git a/src/audio/xma_context.cpp b/src/audio/xma_context.cpp
+index 11b83be..8ad5acc 100644
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -16,6 +16,7 @@
+ #include <rex/audio/xma/decoder.h>
+ #include <rex/audio/xma/helpers.h>
+ #include <rex/dbg.h>
++#include <rex/cvar.h>
+ #include <rex/logging.h>
+ #include <rex/memory/ring_buffer.h>
+ #include <rex/platform.h>
+@@ -36,6 +37,9 @@ extern "C" {
+ // Credits for most of this code goes to:
+ // https://github.com/koolkdev/libertyv/blob/master/libav_wrapper/xma2dec.c
+ 
++REXCVAR_DEFINE_BOOL(fnr3_xma_no_lookahead, false, "Audio",
++    "Publish FNR3 decoded XMA frames without waiting for a future frame");
++
+ namespace rex::audio {
+ 
+ using stream::BitStream;
+@@ -671,38 +675,57 @@ void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+     ConvertFrame(reinterpret_cast<const uint8_t**>(&av_frame_->data), bool(data->is_stereo),
+                  decoded_frame_.data());
+ 
+-    // Realign the decoder's output onto the bitstream's sample numbering: the
+-    // samples of the frame just decoded run from kDecoderStartPadding into this
+-    // block and finish in the head of the next one.
+-    const size_t pad_bytes = kDecoderStartPadding * kBytesPerSample << data->is_stereo;
+-    const size_t carry_bytes = (kBytesPerFrameChannel << data->is_stereo) - pad_bytes;
+-
+-    // Loop end: limit output to subframes 0..loop_subframe_end.
+-    const uint8_t decoded_output_limit =
+-        is_loop_end_frame ? static_cast<uint8_t>((data->loop_subframe_end + 1) << data->is_stereo)
+-                          : 0;
+-    // Loop start: skip leading subframes per loop_subframe_skip. skip == 4
+-    // means the whole frame is a warm-up frame (frame-aligned loop start):
+-    // decode seeds the codec state, output is fully discarded.
+-    const uint8_t decoded_start_skip =
+-        loop_start_skip_pending_ ? static_cast<uint8_t>(data->loop_subframe_skip << data->is_stereo)
+-                                 : 0;
+-    loop_start_skip_pending_ = false;
+-
+-    if (carry_valid_) {
+-      std::memcpy(raw_frame_.data(), carry_frame_.data(), carry_bytes);
+-      std::memcpy(raw_frame_.data() + carry_bytes, decoded_frame_.data(), pad_bytes);
+-
++    if (REXCVAR_GET(fnr3_xma_no_lookahead)) {
++      // FNR3 waits synchronously for finite waves inside its audio server.
++      // Keeping one PCM frame for delay compensation prevents those waves
++      // from completing when no following frame will arrive.
++      std::memcpy(raw_frame_.data(), decoded_frame_.data(),
++                  kBytesPerFrameChannel << data->is_stereo);
+       current_frame_remaining_subframes_ = 4 << data->is_stereo;
+-      loop_frame_output_limit_ = pending_output_limit_;
+-      current_frame_remaining_subframes_ -=
+-          std::min(pending_start_skip_, current_frame_remaining_subframes_);
+-    }
++      loop_frame_output_limit_ =
++          is_loop_end_frame ? static_cast<uint8_t>((data->loop_subframe_end + 1)
++                                                   << data->is_stereo) : 0;
++      if (loop_start_skip_pending_) {
++        current_frame_remaining_subframes_ -= std::min(
++            static_cast<uint8_t>(data->loop_subframe_skip << data->is_stereo),
++            current_frame_remaining_subframes_);
++      }
++      loop_start_skip_pending_ = false;
++      carry_valid_ = false;
++    } else {
++      // Realign the decoder's output onto the bitstream's sample numbering: the
++      // samples of the frame just decoded run from kDecoderStartPadding into this
++      // block and finish in the head of the next one.
++      const size_t pad_bytes = kDecoderStartPadding * kBytesPerSample << data->is_stereo;
++      const size_t carry_bytes = (kBytesPerFrameChannel << data->is_stereo) - pad_bytes;
++
++      // Loop end: limit output to subframes 0..loop_subframe_end.
++      const uint8_t decoded_output_limit =
++          is_loop_end_frame ? static_cast<uint8_t>((data->loop_subframe_end + 1) << data->is_stereo)
++                            : 0;
++      // Loop start: skip leading subframes per loop_subframe_skip. skip == 4
++      // means the whole frame is a warm-up frame (frame-aligned loop start):
++      // decode seeds the codec state, output is fully discarded.
++      const uint8_t decoded_start_skip =
++          loop_start_skip_pending_ ? static_cast<uint8_t>(data->loop_subframe_skip << data->is_stereo)
++                                   : 0;
++      loop_start_skip_pending_ = false;
++
++      if (carry_valid_) {
++        std::memcpy(raw_frame_.data(), carry_frame_.data(), carry_bytes);
++        std::memcpy(raw_frame_.data() + carry_bytes, decoded_frame_.data(), pad_bytes);
++
++        current_frame_remaining_subframes_ = 4 << data->is_stereo;
++        loop_frame_output_limit_ = pending_output_limit_;
++        current_frame_remaining_subframes_ -=
++            std::min(pending_start_skip_, current_frame_remaining_subframes_);
++      }
+ 
+-    std::memcpy(carry_frame_.data(), decoded_frame_.data() + pad_bytes, carry_bytes);
+-    carry_valid_ = true;
+-    pending_output_limit_ = decoded_output_limit;
+-    pending_start_skip_ = decoded_start_skip;
++      std::memcpy(carry_frame_.data(), decoded_frame_.data() + pad_bytes, carry_bytes);
++      carry_valid_ = true;
++      pending_output_limit_ = decoded_output_limit;
++      pending_start_skip_ = decoded_start_skip;
++    }
+   } else {
+     // A dropped frame breaks the carry's adjacency; re-prime rather than splice
+     // two blocks that are not neighbors.
