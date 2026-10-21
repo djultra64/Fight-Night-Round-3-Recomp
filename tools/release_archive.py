@@ -5,10 +5,13 @@ import hashlib
 import json
 from pathlib import Path
 import tarfile
+import zipfile
 
 
 def archive_package(package, destination):
     package = package.resolve()
+    if not (destination.name.endswith('.tar.gz') or destination.suffix == '.zip'):
+        raise ValueError('Unsupported archive format; use .tar.gz or .zip')
     manifest = json.loads((package / 'package-manifest.json').read_text())
     if manifest.get('owner') != 'djultra64' or manifest.get('game_assets_included') is not False:
         raise ValueError('Unrecognized public package')
@@ -23,17 +26,28 @@ def archive_package(package, destination):
     if destination.exists():
         raise ValueError('Archive already exists')
     destination.parent.mkdir(parents=True, exist_ok=True)
-    with tarfile.open(destination, 'w:gz') as archive:
-        for path in [package, *sorted(package.rglob('*'))]:
-            info = archive.gettarinfo(str(path), arcname=str(Path(package.name) / path.relative_to(package)))
-            info.uid = info.gid = info.mtime = 0
-            info.uname = info.gname = ''
-            info.mode = (0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
-            if path.is_file():
-                with path.open('rb') as stream:
-                    archive.addfile(info, stream)
-            else:
-                archive.addfile(info)
+    if destination.suffix == '.zip':
+        with zipfile.ZipFile(destination, 'w', compression=zipfile.ZIP_DEFLATED, compresslevel=9) as archive:
+            for path in sorted(package.rglob('*')):
+                if not path.is_file():
+                    continue
+                info = zipfile.ZipInfo((Path(package.name) / path.relative_to(package)).as_posix(), (1980, 1, 1, 0, 0, 0))
+                info.create_system = 3
+                info.external_attr = (0o100755 if path.stat().st_mode & 0o111 else 0o100644) << 16
+                info.compress_type = zipfile.ZIP_DEFLATED
+                archive.writestr(info, path.read_bytes())
+    else:
+        with tarfile.open(destination, 'w:gz') as archive:
+            for path in [package, *sorted(package.rglob('*'))]:
+                info = archive.gettarinfo(str(path), arcname=str(Path(package.name) / path.relative_to(package)))
+                info.uid = info.gid = info.mtime = 0
+                info.uname = info.gname = ''
+                info.mode = (0o755 if path.is_dir() or path.stat().st_mode & 0o111 else 0o644)
+                if path.is_file():
+                    with path.open('rb') as stream:
+                        archive.addfile(info, stream)
+                else:
+                    archive.addfile(info)
     digest = hashlib.sha256(destination.read_bytes()).hexdigest()
     checksums = destination.parent / 'SHA256SUMS'
     entries = checksums.read_text().splitlines() if checksums.exists() else []

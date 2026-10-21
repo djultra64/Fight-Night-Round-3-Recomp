@@ -20,14 +20,5 @@
     "linux_archive_sha256": "0388edb3f8fb1444f1b0ad5d440cb02d9690ac20a76b04fd6b7dcc19f59328a6",
     "windows_archive_sha256": "ad4485da853fbe932e9f5dbb643f9b5fe85dc73775ebbad4df6879fe6df0c11b"
   },
-  "extract_xiso_commit": "3f5b62cfe68f000b0e3c8a30104973f3a297948e",
-  "environment": {
-    "os": "Bazzite 43.20260420.0",
-    "cpu": "AMD Ryzen Z1 Extreme",
-    "machine": "x86_64",
-    "kernel": "6.17.7-ba29.fc43.x86_64",
-    "linux_compiler": "Clang 20.1.8 (Flatpak org.freedesktop.Sdk 25.08)",
-    "gpu": "AMD Ryzen Z1 Extreme (RADV PHOENIX)",
-    "driver": "Mesa 26.0.4"
-  }
+  "extract_xiso_commit": "3f5b62cfe68f000b0e3c8a30104973f3a297948e"
 }

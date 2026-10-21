@@ -306,6 +306,27 @@ class PackageTests(unittest.TestCase):
             release.archive_package(package, self.root / 'invalid.tar.gz')
         self.assertFalse((self.root / 'invalid.tar.gz').exists())
 
+    def test_windows_release_is_real_zip_and_rejects_unknown_formats(self):
+        import zipfile
+        spec = importlib.util.spec_from_file_location('release_archive', Path(pb.__file__).parent / 'release_archive.py')
+        release = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(release)
+        package = self.root / 'windows-beta'
+        package.mkdir()
+        (package / 'launch.cmd').write_bytes(b'@echo off\r\n')
+        pb.write_json(package / 'package-manifest.json', {'owner': 'djultra64', 'game_assets_included': False, 'files': pb.files_manifest(package)})
+        output = self.root / 'windows-beta.zip'
+        self.assertEqual(release.archive_package(package, output), pb.sha(output))
+        self.assertTrue(zipfile.is_zipfile(output))
+        with zipfile.ZipFile(output) as archive:
+            self.assertIsNone(archive.testzip())
+            self.assertEqual(archive.read('windows-beta/launch.cmd'), b'@echo off\r\n')
+            self.assertEqual(archive.getinfo('windows-beta/launch.cmd').date_time, (1980, 1, 1, 0, 0, 0))
+        invalid = self.root / 'windows-beta.exe'
+        with self.assertRaisesRegex(ValueError, 'format'):
+            release.archive_package(package, invalid)
+        self.assertFalse(invalid.exists())
+
     def test_package_dry_run_does_not_write_or_launch(self):
         target = 'linux-amd64'
         home, sdk, project, build = pb.layout(target, self.root)
