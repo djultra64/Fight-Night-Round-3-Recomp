@@ -12,7 +12,7 @@ Setup does not overwrite an unrelated destination. Select the existing verified 
 
 ## The game will not start
 
-Run the launcher from a terminal and retain the error. Check Python 3.12+, the supported data, a working Vulkan driver, X11 or Wayland, and the package's required system libraries. The packaged Linux binary requires glibc 2.38+ and libstdc++ with GLIBCXX_3.4.32 (GCC 13.2) or newer. A missing GLIBC/GLIBCXX symbol usually means the distribution is too old for that binary; use a compatible system or build from source. The build records list runtime dependencies; the package does not replace your graphics driver. Windows has not yet been validated.
+Run the launcher from a terminal and retain the error. Check Python 3.12+, the supported data, a working Vulkan driver, X11 or Wayland, and the package's required system libraries. The packaged Linux binary requires glibc 2.38+ and libstdc++ with GLIBCXX_3.4.32 (GCC 13.2) or newer. A missing GLIBC/GLIBCXX symbol usually means the distribution is too old for that binary; use a compatible system or build from source. The build records list runtime dependencies; the package does not replace your graphics driver.
 
 Use `--prepare-only` to isolate original-data verification and local frontend/glyph generation from game startup. If generated overrides are stale, rerun the launcher with `--regenerate-assets`. Keep your original game data intact.
 

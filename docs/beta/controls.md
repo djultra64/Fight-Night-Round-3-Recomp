@@ -15,6 +15,6 @@ Face-button positions differ between Nintendo and Xbox. At the default physical 
 
 Use the displayed action and matching physical position. A logical action must not be inferred from the Xbox letter when using a Nintendo layout. Optional remapping can change which physical control performs an action.
 
-The native footer provides the return action in GRAPHICS; there is no additional Back row. Returning with B on the Ally has been confirmed to reopen OPTIONS correctly. On other families, follow the corresponding return prompt rather than assuming the same printed letter.
+The native footer provides the return action from GRAPHICS to OPTIONS; there is no additional Back row. Follow the displayed return prompt for your controller family and mappings.
 
-The Ally's integrated controls have been physically tested. Xbox, PlayStation and Nintendo Switch families have implementation and automated coverage, but full prompt/action verification with each physical controller is still pending. Include the device model, connection type, selected family and affected action when reporting a mismatch.
+If a prompt does not match the action performed, check the selected family and optional bindings. Include the selected family, affected action and displayed prompt when reporting a mismatch.

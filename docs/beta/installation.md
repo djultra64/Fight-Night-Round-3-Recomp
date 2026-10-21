@@ -1,17 +1,17 @@
 # Installation and first launch
 
-Beta 0.7 has been tested on Linux using the ROG Ally. Windows source support exists, but a Windows build and gameplay session have not been validated.
+Download the Linux package from [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v0.7). See the [build guide](building.md) for Linux and Windows source builds.
 
 ## What you need
 
 - Your own supported **USA Xbox 360** edition of Fight Night Round 3.
-- A recent Linux x86-64 system with **glibc 2.38+** and libstdc++ providing **GLIBCXX_3.4.32** or newer (GCC 13.2). These are the verified packaged binary ABI requirements; older distributions may need a source build.
+- A recent Linux x86-64 system with **glibc 2.38+** and libstdc++ providing **GLIBCXX_3.4.32** or newer (GCC 13.2). These are the packaged binary ABI requirements; older distributions may need a source build.
 - A working Vulkan driver, X11 or Wayland, and the system libraries required by the package.
 - Python 3.12+ for local data preparation and the launcher.
 - At least 4 GiB of free space for extracted data; 5 GiB recommended, with additional room for caches.
-- A compatible controller. The Ally's integrated controls have been physically tested; other controller families still need full device verification.
+- A compatible controller; Xbox, PlayStation and Nintendo Switch prompt layouts are available. See [controls](controls.md).
 
-The audited Linux runtime directly requires `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1` and `libwayland-client.so.0`, alongside glibc, libstdc++ and libgcc. Install both the listed X11 and Wayland client libraries even if your desktop uses only one protocol. A working system Vulkan loader and GPU driver are also required. The release’s `build-record.json` records the actual binary dependencies.
+The Linux runtime directly requires `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1` and `libwayland-client.so.0`, alongside glibc, libstdc++ and libgcc. Install both the listed X11 and Wayland client libraries even if your desktop uses only one protocol. A working system Vulkan loader and GPU driver are also required. The release’s `build-record.json` records the actual binary dependencies.
 
 No universal minimum hardware specification has been established. Start at 720p and increase resolution after confirming normal gameplay speed.
 
@@ -25,8 +25,6 @@ The supported title ID is `454107DE`, media ID `022202E5`, XEX version `0.0.0.2`
 | `default.xex` | `5d583bc4c6a3a13085508a823eff4ebe676a0131ed7f2d5ccf2f14eb0e47332f` |
 
 The authoritative record is `config/input-manifest.json` in the source, or `support/input-manifest.json` in a runtime package. Other editions are unsupported.
-
-The local installer was validated with this USA disc image: all 1,856 extracted files matched an existing verified extraction byte for byte, totaling 3,401,168,889 bytes. This was an import-integrity check; it did not open the game or establish additional gameplay compatibility.
 
 ## First launch on Linux
 
@@ -59,7 +57,7 @@ The data root must contain `default.xex` and the game's original directory struc
 
 The default extracted-data directory is `${XDG_DATA_HOME:-~/.local/share}/fnr3/game-data`. The selected absolute path is remembered in `installation.json` under the user-data directory. An unrelated existing destination is not overwritten.
 
-Windows is source-only for this beta; no Windows installer or playable binary is claimed.
+For Windows, follow the [source build instructions](building.md#windows).
 
 ## Settings and updates
 

@@ -8,9 +8,9 @@ You must supply your own supported USA game data. No disc images, XEX executable
 
 ## Beta status
 
-The Linux version has been built and tested on the ROG Ally with a real GPU and its integrated controls. The accepted baseline reaches the ring and supports gameplay, but a complete fight and sustained audio stability have not been established. Intermittent loading, text and audio issues remain. Windows support is prepared in the source; a Windows build and gameplay test have **not** been validated.
+Beta 0.7 includes the Linux runtime package and source build support for Linux and Windows. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
 
-Read the [known issues](docs/beta/known-issues.md) before installing. Beta 0.7 is a prerelease, not a claim of complete game compatibility.
+Read the [known issues](docs/beta/known-issues.md) before installing. Downloads are available through [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases).
 
 ## Features
 

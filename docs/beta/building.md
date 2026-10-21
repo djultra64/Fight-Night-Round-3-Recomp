@@ -4,9 +4,9 @@ The production build compiles the host, patched ReXGlue runtime and Vulkan GPU p
 
 ## Prerequisites
 
-Use an x86-64 Linux system with Python 3.12+, Git, CMake 3.25+, Ninja, LLVM/Clang 18+ and a Vulkan development/runtime environment. The tested Linux route uses Flatpak `org.freedesktop.Sdk//25.08` and its LLVM 20 extension. Python 3.12+ is required for safe archive extraction.
+Use an x86-64 Linux system with Python 3.12+, Git, CMake 3.25+, Ninja, LLVM/Clang 18+ and a Vulkan development/runtime environment. The Flatpak build route uses `org.freedesktop.Sdk//25.08` and its LLVM 20 extension. Python 3.12+ is required for safe archive extraction.
 
-Windows source support expects an x64 developer terminal, Python 3.12+, Git, CMake, Ninja, LLVM/Clang including `llvm-readobj`, and the Windows SDK. These instructions describe the intended native build route; a Windows build and run have not yet been validated. `--target` does not enable cross-compilation.
+Windows source support expects an x64 developer terminal, Python 3.12+, Git, CMake, Ninja, LLVM/Clang including `llvm-readobj`, and the Windows SDK. `--target` does not enable cross-compilation.
 
 ## Prepare the inputs
 
@@ -49,7 +49,7 @@ python3 tools/port_build.py package
 
 For an appropriately configured native toolchain, omit `--flatpak`. The build does not launch the game. Outputs are under `build/production/linux-amd64/`; the default package is `dist/fnr3-linux-amd64/`. Choose a new output directory with `package --output /absolute/path/to/new-package`; existing package destinations are rejected.
 
-## Windows — unvalidated
+## Windows
 
 From the x64 developer terminal:
 
@@ -59,7 +59,7 @@ py -3 tools/port_build.py package --dry-run
 py -3 tools/port_build.py package
 ```
 
-Expected output directories are `build/production/win-amd64/` and `dist/fnr3-win-amd64/`. These paths do not imply an available or tested Windows binary.
+Output directories are `build/production/win-amd64/` and `dist/fnr3-win-amd64/`.
 
 ## Verify and package
 
@@ -67,6 +67,6 @@ Expected output directories are `build/production/win-amd64/` and `dist/fnr3-win
 python3 -m unittest discover -s tests -p test_port_build.py
 ```
 
-The package audit verifies recorded artifact hashes, runtime/plugin completeness and load paths, and rejects original game data. Packages preserve build records and dependency notices. The recipe records source inputs and compiler details; it does not promise identical binaries across different toolchains. A successful build or CPU regression suite does not verify gameplay.
+The package audit verifies recorded artifact hashes, runtime/plugin completeness and load paths, and rejects original game data. Packages preserve build records and dependency notices. The recipe records source inputs and compiler details; it does not promise identical binaries across different toolchains. Game compatibility remains subject to the [known issues](known-issues.md).
 
 Keep SDK revisions and patches aligned. If verified isolated sources change, investigate the discrepancy before removing only the affected isolated production directory and rebuilding. Never replace the SDK pin or bypass input verification merely to make a build pass.
