@@ -17,7 +17,7 @@ Beta 0.7 targets normal-speed play at the original approximately 30 FPS game clo
 
 ## Compatibility and limitations
 
-The packages require Python 3.12+ and an x86-64-v2 CPU. Linux uses Vulkan and requires a Vulkan 1.3 capable GPU/driver. Windows uses Direct3D 12 and requires Windows 10 or 11 x64 with a compatible GPU/driver. See [installation requirements](installation.md#what-you-need) for platform details.
+The packages require Python 3.12+ and an x86-64-v2 CPU. Linux uses Vulkan and requires a Vulkan 1.3 capable GPU/driver. Windows also uses Vulkan and requires Windows 10 or 11 x64 with a Vulkan 1.3 capable GPU/driver. See [installation requirements](installation.md#what-you-need) for platform details.
 
 Intermittent loading, text and audio issues remain. Complete game compatibility and uninterrupted play are not guaranteed. See [known issues](known-issues.md) for current limitations.
 

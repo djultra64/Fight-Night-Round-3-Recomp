@@ -1,6 +1,6 @@
 # Building from source
 
-The production build compiles the host, patched ReXGlue runtime and Xenos GPU plugin together. Linux uses Vulkan; Windows automatically selects Direct3D 12. It generates game-specific code locally from your verified XEX. It does not require or distribute pre-generated PowerPC sources.
+The production build compiles the host, patched ReXGlue runtime and Xenos GPU plugin together. Linux and Windows automatically select Vulkan. It generates game-specific code locally from your verified XEX. It does not require or distribute pre-generated PowerPC sources.
 
 ## Prerequisites
 
@@ -51,7 +51,7 @@ For an appropriately configured native toolchain, omit `--flatpak`. The build do
 
 ## Windows
 
-The recipe compiles both renderer backends and automatically selects Direct3D 12 for the production runtime. No user backend setting is required.
+The recipe compiles both renderer backends and automatically selects Vulkan for the production runtime. No user backend setting is required.
 
 From the x64 developer terminal:
 

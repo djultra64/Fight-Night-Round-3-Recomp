@@ -7,14 +7,14 @@ Download the Linux archive or Windows ZIP from [GitHub Releases](https://github.
 - Your own supported **USA Xbox 360** edition of Fight Night Round 3.
 - A recent Linux x86-64 system with **glibc 2.38+** and libstdc++ providing **GLIBCXX_3.4.32** or newer (GCC 13.2). These are the packaged binary ABI requirements; older distributions may need a source build.
 - An x86-64-v2 CPU. Linux requires a GPU/driver supporting Vulkan 1.3, X11 or Wayland, and the system libraries listed below.
-- For the Windows ZIP, Windows 10 or 11 x64 with a Direct3D 12 capable GPU and graphics driver.
+- For the Windows ZIP, Windows 10 or 11 x64 with a Vulkan 1.3 capable GPU and graphics driver.
 - Python 3.12+ for local data preparation and the launcher.
 - At least 4 GiB of free space for extracted data; 5 GiB recommended, with additional room for caches.
 - A compatible controller; Xbox, PlayStation and Nintendo Switch prompt layouts are available. See [controls](controls.md).
 
 The Linux runtime directly requires `libX11.so.6`, `libX11-xcb.so.1`, `libxcb.so.1` and `libwayland-client.so.0`, alongside glibc, libstdc++ and libgcc. Install both the listed X11 and Wayland client libraries even if your desktop uses only one protocol. A working system Vulkan loader and GPU driver are also required. The release’s `build-record.json` records the actual binary dependencies.
 
-The Windows package includes the required Microsoft release CRT libraries and a self-contained ISO extraction helper; a separate Visual C++ Redistributable installation is not required. Python 3.12+ and your system Direct3D 12 graphics driver are still required.
+The Windows package includes the required Microsoft release CRT libraries and a self-contained ISO extraction helper; a separate Visual C++ Redistributable installation is not required. Python 3.12+ and your system Vulkan graphics driver are still required.
 
 No universal minimum hardware specification has been established. Start at 720p and increase resolution after confirming normal gameplay speed.
 

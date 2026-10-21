@@ -298,7 +298,7 @@ def build_port(target, jobs, flatpak=False, sdk_only=False):
               'compiler_detection': {str(p.relative_to(build)): p.read_text()
                   for p in (build / 'CMakeFiles').glob('*/CMakeCXXCompiler.cmake')},
               'project_inputs': files_manifest(project), 'configuration': 'Release',
-              'backend': 'Direct3D 12' if windows else 'Vulkan', 'clock': 'original',
+              'backend': 'Vulkan', 'clock': 'original',
               'cmake_cache_sha256': sha(build / 'CMakeCache.txt')}
     stage = build / 'stage'
     if stage.exists():
@@ -513,7 +513,7 @@ def package_port(target, output, dry_run=False):
         launch_command = 'launch.cmd'
         platform_help = (
             'Windows 10/11 x64: run install.cmd to import your own local ISO, then launch.cmd.\n'
-            'Install a current Direct3D 12 graphics driver for your graphics card.\n'
+            'Install a current Vulkan 1.3 graphics driver for your graphics card.\n'
             'Required Microsoft Visual C++ Release runtime DLLs are included beside the game.\n')
     else:
         launch_command = './launch.sh'

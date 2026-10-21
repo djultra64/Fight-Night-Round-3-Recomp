@@ -2,7 +2,7 @@
 
 ## 0.7 — public beta
 
-- Added the native Windows Direct3D 12 runtime package, release CRT libraries and local ISO setup.
+- Added the native Windows Vulkan runtime package, release CRT libraries and local ISO setup.
 - Removed redundant mouse-capture UI work while polling keyboard input.
 - Added the native GRAPHICS page with unified resolution, fullscreen, FXAA and texture filtering settings.
 - Integrated QUIT GAME, saved settings and launcher-managed SAVE AND RESTART.

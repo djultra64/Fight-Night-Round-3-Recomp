@@ -2,7 +2,7 @@
 
 **Public beta 0.7 · Project work by DJ Ultra 64 ([djultra64](https://github.com/djultra64))**
 
-An unofficial PC recompilation of Fight Night Round 3 for Xbox 360, built with ReXGlue and the Xenos renderer: Vulkan on Linux and Direct3D 12 on Windows. The current goal is the original game timing, approximately 30 FPS, with configurable resolution and a native settings interface.
+An unofficial PC recompilation of Fight Night Round 3 for Xbox 360, built with ReXGlue and the Xenos renderer: Vulkan on Linux and Windows. The current goal is the original game timing, approximately 30 FPS, with configurable resolution and a native settings interface.
 
 You must supply your own supported USA game data. No disc images, XEX executables, generated PowerPC source files, or extracted/game-derived asset files are included in the public distribution. The runtime binary contains compiled translated game code. This project is not affiliated with or endorsed by the game's original publishers or developers.
 
@@ -39,7 +39,7 @@ Windows (PowerShell):
 .\launch.cmd
 ```
 
-Both packages require Python 3.12+ and an x86-64-v2 CPU. Linux requires a Vulkan 1.3 capable GPU/driver; Windows requires Windows 10 or 11 x64 and a Direct3D 12 capable GPU/driver. First-run setup prompts for your own supported USA ISO, verifies it and prepares a private installation before starting the game. Allow at least 5 GiB of free space plus room for caches. Follow [installation and first launch](docs/beta/installation.md) for requirements and exact supported input hashes. To build from source, use the [build guide](docs/beta/building.md).
+Both packages require Python 3.12+ and an x86-64-v2 CPU. Linux requires a Vulkan 1.3 capable GPU/driver; Windows requires Windows 10 or 11 x64 and a Vulkan 1.3 capable GPU/driver. First-run setup prompts for your own supported USA ISO, verifies it and prepares a private installation before starting the game. Allow at least 5 GiB of free space plus room for caches. Follow [installation and first launch](docs/beta/installation.md) for requirements and exact supported input hashes. To build from source, use the [build guide](docs/beta/building.md).
 
 For an existing supported extraction, pass its location instead:
 
