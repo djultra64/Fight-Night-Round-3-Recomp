@@ -47,8 +47,13 @@ public:
       // Register backend settings before applying the unified profile; device
       // creation still belongs to ReXApp. Leave load errors to its normal path.
       if (!config.graphics)
-        config.graphics =
-            rex::system::LoadGpuPlugin(config.gpu_plugin, "vulkan");
+        config.graphics = rex::system::LoadGpuPlugin(config.gpu_plugin,
+#if defined(_WIN32)
+                                                   "d3d12"
+#else
+                                                   "vulkan"
+#endif
+        );
       if (config.graphics)
         fnr3::port::ApplyGraphicsSettings();
     }

@@ -33,6 +33,8 @@ PATCHES = (
     'rexglue-sdk-sdl-connected-discovery.patch',
     'rexglue-sdk-xma-drain-pending.patch',
     'rexglue-sdk-xma-split-frame-header.patch',
+    'rexglue-sdk-vulkan-shared-memory-sync.patch',
+    'rexglue-sdk-d3d12-queue-fence-result.patch',
     'tools/port-input/rexglue-native-glyphs.patch',
     'tools/port-input/rexglue-sdl-observer-abi.patch',
     'tools/port-input/rexglue-native-glyph-diagnostics.patch',
@@ -218,7 +220,7 @@ def inspect_dependencies(stage, target):
     if tool is None:
         raise ValueError('Dependency audit requires ' + ('llvm-readobj' if windows else 'readelf'))
     result = {}
-    for path in sorted(stage.iterdir()):
+    for path in ([stage] if stage.is_file() else sorted(stage.iterdir())):
         command = [tool, '--coff-imports', str(path)] if windows else [tool, '-d', str(path)]
         output = subprocess.check_output(command, text=True)
         dependencies = re.findall(r'Name: ([^\r\n]+)', output) if windows else re.findall(r'\(NEEDED\).*?\[([^]]+)\]', output)
@@ -269,7 +271,7 @@ def build_port(target, jobs, flatpak=False, sdk_only=False):
          '-DCMAKE_CXX_COMPILER=' + compiler, '-DREXSDK_DIR=' + str(sdk),
          '-DCMAKE_PROJECT_ReXGlue_INCLUDE=' + str(project / 'tools/port-build/sdk_loader_paths.cmake'),
          '-DCMAKE_C_FLAGS=-march=x86-64-v2', '-DCMAKE_CXX_FLAGS=-march=x86-64-v2',
-         '-DREXGLUE_USE_VULKAN=ON', '-DREXGLUE_USE_D3D12=OFF',
+         '-DREXGLUE_USE_VULKAN=ON', '-DREXGLUE_USE_D3D12=' + ('ON' if windows else 'OFF'),
          '-DREXGLUE_ENABLE_TRACY=OFF', '-DREXGLUE_ENABLE_PERF_COUNTERS=OFF',
          '-DREXGLUE_BUILD_TESTS=OFF']
     run(configure_command, flatpak)
@@ -295,7 +297,7 @@ def build_port(target, jobs, flatpak=False, sdk_only=False):
               'compiler_detection': {str(p.relative_to(build)): p.read_text()
                   for p in (build / 'CMakeFiles').glob('*/CMakeCXXCompiler.cmake')},
               'project_inputs': files_manifest(project), 'configuration': 'Release',
-              'backend': 'Vulkan', 'clock': 'original',
+              'backend': 'Direct3D 12' if windows else 'Vulkan', 'clock': 'original',
               'cmake_cache_sha256': sha(build / 'CMakeCache.txt')}
     stage = build / 'stage'
     if stage.exists():
@@ -352,7 +354,7 @@ def validate_stage(stage, record):
     return actual
 
 
-def build_extractor(target, flatpak=False):
+def build_extractor(target, flatpak=False, compiler=None):
     source = ROOT / '.cache/extract-xiso'
     revision = subprocess.check_output(['git', '-C', str(source), 'rev-parse', 'HEAD'], text=True).strip()
     if revision != EXTRACT_XISO_PIN:
@@ -361,10 +363,53 @@ def build_extractor(target, flatpak=False):
     if dirty:
         raise ValueError('extract-xiso has modified tracked source')
     build = ROOT / 'build/iso-extractor' / target
-    run(['cmake', '-S', source, '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
-         '-DCMAKE_POLICY_VERSION_MINIMUM=3.5'], flatpak)
-    run(['cmake', '--build', build, '--target', 'extract-xiso'], flatpak)
-    return build / ('extract-xiso.exe' if target == 'win-amd64' else 'extract-xiso')
+    if target == 'win-amd64':
+        compiler = compiler or shutil.which('x86_64-w64-mingw32-gcc')
+        if not compiler:
+            raise ValueError('Windows extractor requires native MinGW-w64; pass --extractor-compiler <gcc.exe or clang.exe>')
+        compiler = str(Path(compiler).resolve())
+        triple = subprocess.check_output([compiler, '-dumpmachine'], text=True).strip().lower()
+        if not triple.startswith('x86_64') or not any(name in triple for name in ('mingw', 'windows-gnu')):
+            raise ValueError('The extractor compiler must target x86-64 MinGW-w64: ' + triple)
+        configure = ['cmake', '-S', ROOT / 'tools/port-build/extractor', '-B', build / 'mingw',
+                     '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+                     '-DCMAKE_C_COMPILER=' + compiler,
+                     '-DFNR3_EXTRACT_XISO_SOURCE=' + str(source),
+                     '-DCMAKE_RUNTIME_OUTPUT_DIRECTORY=' + str(build)]
+        compile_directory = build / 'mingw'
+    else:
+        configure = ['cmake', '-S', source, '-B', build, '-G', 'Ninja', '-DCMAKE_BUILD_TYPE=Release',
+                     '-DCMAKE_POLICY_VERSION_MINIMUM=3.5']
+        compile_directory = build
+    run(configure, flatpak)
+    run(['cmake', '--build', compile_directory, '--target', 'extract-xiso'], flatpak)
+    extractor = build / ('extract-xiso.exe' if target == 'win-amd64' else 'extract-xiso')
+    if target == 'win-amd64':
+        imports = inspect_dependencies(extractor, target)[extractor.name]['needed']
+        if any(name.lower().startswith(('msvcp140', 'vcruntime140', 'concrt140', 'libgcc',
+                                       'libstdc++', 'libwinpthread', 'libssp', 'msys-',
+                                       'libc++', 'libunwind')) for name in imports):
+            raise ValueError('The nested ISO extractor must use static compiler runtimes')
+        # MSYS2's native MinGW distributions keep the notices for embedded CRT,
+        # header helpers and libgcc (with its runtime exception) here.
+        license_root = Path(compiler).parent.parent / 'share/licenses'
+        notices = build / 'licenses'
+        for component in ('crt', 'headers', 'gcc'):
+            source_notices = list((license_root / component).glob('COPYING*'))
+            if not source_notices:
+                raise ValueError('Missing MinGW runtime notices under ' + str(license_root / component))
+            destination = notices / ('mingw-' + component)
+            destination.mkdir(parents=True, exist_ok=True)
+            for path in source_notices:
+                shutil.copy2(path, destination / path.name)
+        write_json(build / 'extractor-record.json', {
+            'schema': 1, 'owner': 'djultra64', 'source_commit': EXTRACT_XISO_PIN,
+            'compiler': {'target': triple, 'version': subprocess.check_output(
+                [compiler, '--version'], text=True).splitlines()[0]},
+            'compiler_runtimes': 'static', 'system_imports': imports,
+            'artifacts': {extractor.name: sha(extractor)},
+            'licenses': files_manifest(notices)})
+    return extractor
 
 
 def bundle_installer(output, target, licenses):
@@ -378,6 +423,20 @@ def bundle_installer(output, target, licenses):
     support.mkdir(exist_ok=True)
     shutil.copy2(extractor, support / extractor.name)
     shutil.copy2(ROOT / '.cache/extract-xiso/LICENSE.TXT', licenses / 'extract-xiso-LICENSE.TXT')
+    if target == 'win-amd64':
+        build = extractor.parent
+        extractor_record = json.loads((build / 'extractor-record.json').read_text())
+        if extractor_record['artifacts'] != {extractor.name: sha(extractor)}:
+            raise ValueError('ISO extractor differs from its build record')
+        if extractor_record['licenses'] != files_manifest(build / 'licenses'):
+            raise ValueError('ISO extractor license notices differ from the build record')
+        shutil.copy2(build / 'extractor-record.json', support / 'extractor-build.json')
+        shutil.copytree(build / 'licenses', licenses / 'extract-xiso-runtime')
+        for name in ('getopt.c', 'dirent.c'):
+            # Keep the complete upstream notices with the small compatibility
+            # sources so licenses at either end of a file remain intact.
+            shutil.copy2(ROOT / '.cache/extract-xiso/win32' / name,
+                         licenses / ('extract-xiso-win32-' + name))
 
 
 def package_port(target, output, dry_run=False):
@@ -406,7 +465,7 @@ def package_port(target, output, dry_run=False):
         'owner', 'target', 'sdk', 'sdk_inputs_sha256', 'configuration', 'clock',
         'artifacts', 'runtime_redistributables') if key in record}
     public_record.update({'product': PRODUCT, 'version': VERSION, 'channel': 'beta',
-                          'backend': 'Vulkan', 'simulation_hz': 30,
+                          'backend': record.get('backend', 'Vulkan'), 'simulation_hz': 30,
                           'loader_dependencies': record.get('loader_dependencies', {})})
     write_json(output / 'build-record.json', public_record)
     licenses = output / 'licenses'
@@ -449,23 +508,32 @@ def package_port(target, output, dry_run=False):
         launcher.chmod(0o755)
     (output / 'support').mkdir(exist_ok=True)
     shutil.copy2(ROOT / 'config/input-manifest.json', output / 'support/input-manifest.json')
+    if target == 'win-amd64':
+        launch_command = 'launch.cmd'
+        platform_help = (
+            'Windows 10/11 x64: run install.cmd to import your own local ISO, then launch.cmd.\n'
+            'Install a current Direct3D 12 graphics driver for your graphics card.\n'
+            'Required Microsoft Visual C++ Release runtime DLLs are included beside the game.\n')
+    else:
+        launch_command = './launch.sh'
+        platform_help = (
+            'Linux: run ./install.sh to import your own local ISO, then ./launch.sh.\n'
+            'Requires glibc 2.38+, libstdc++ providing GLIBCXX_3.4.32 (GCC 13.2+), libgcc and libm.\n'
+            'Requires libX11-xcb.so.1, libX11.so.6, libxcb.so.1 and libwayland-client.so.0.\n'
+            'Install the Vulkan loader and a working Vulkan 1.3 GPU driver.\n'
+            'Desktop display/audio/input services are provided by your Linux system.\n')
     (output / 'README.txt').write_text(
         PRODUCT + ' v0.7 Beta\nProject work: djultra64\n'
         'ReXGlue and dependencies retain their respective authors and licenses.\n'
-        'Original 30 FPS game clock. Vulkan renderer.\n'
+        'Original 30 FPS game clock. ' + public_record['backend'] + ' renderer.\n'
         'Original game assets are not included. Supply your verified supported USA game data.\n'
-        'Requires Python 3.12+, a Vulkan 1.3 capable GPU/driver and an x86-64-v2 CPU.\n'
-        'Linux: run ./install.sh to import your own local ISO, then ./launch.sh.\n'
-        'Windows: run install.cmd, then launch.cmd.\n'
+        'Requires Python 3.12+ and an x86-64-v2 CPU.\n'
+        + platform_help +
         'First launch also offers installation; no game data is downloaded.\n'
-        'Existing extracted data: python launch.py --game-data-root <absolute path>.\n'
+        'Existing extracted data: ' + launch_command + ' --game-data-root <absolute path>.\n'
         'Use --prepare-only to generate private overrides without opening the game.\n'
         'The supplied prep scripts verify original asset pins; derived assets remain private.\n'
         'Keep saves/settings and shader caches outside this package.\n'
-        'Linux: glibc 2.38+, libstdc++ providing GLIBCXX_3.4.32 (GCC 13.2+), libgcc and libm.\n'
-        'Requires libX11-xcb.so.1, libX11.so.6, libxcb.so.1 and libwayland-client.so.0.\n'
-        'Install the Vulkan loader and a working Vulkan 1.3 GPU driver.\n'
-        'Desktop display/audio/input services are provided by your Linux system.\n'
         'The runtime, Xenos GPU plugin, SDL3 and ISO extractor are bundled.\n'
         'Build and package hashes are recorded; this is a public beta.\n', encoding='utf-8')
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md',
@@ -475,6 +543,8 @@ def package_port(target, output, dry_run=False):
         shutil.copy2(ROOT / name, destination)
     with (output / 'README.txt').open('a', encoding='utf-8') as readme:
         readme.write('This product includes software developed by in <in@fishtank.com>.\n')
+        if target == 'win-amd64':
+            readme.write('This product includes software developed by the Apache Software Foundation (http://www.apache.org/).\n')
     write_json(output / 'package-manifest.json', {'schema': 1, 'target': target,
                'product': PRODUCT, 'version': VERSION, 'channel': 'beta',
                'iso_extractor_commit': EXTRACT_XISO_PIN,
@@ -491,6 +561,7 @@ def main():
     parser.add_argument('--flatpak', action='store_true')
     parser.add_argument('--dry-run', action='store_true')
     parser.add_argument('--output', type=Path)
+    parser.add_argument('--extractor-compiler', help='Native MinGW-w64 C compiler for the Windows ISO extractor')
     args = parser.parse_args()
     target = args.target or TARGETS.get(platform.system())
     if target is None or args.jobs < 1:
@@ -506,7 +577,7 @@ def main():
     elif args.action in {'build', 'sdk-build'}:
         build_port(target, args.jobs, args.flatpak, sdk_only=args.action == 'sdk-build')
         if args.action == 'build':
-            build_extractor(target, args.flatpak)
+            build_extractor(target, args.flatpak, args.extractor_compiler)
     else:
         output = args.output or ROOT / 'dist' / ('fight-night-round-3-recomp-v0.7-beta-' + target)
         package_port(target, output.resolve(), args.dry_run)

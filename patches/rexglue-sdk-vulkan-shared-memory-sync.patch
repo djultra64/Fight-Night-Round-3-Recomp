@@ -1,0 +1,26 @@
+--- a/src/graphics/vulkan/shared_memory.cpp
++++ b/src/graphics/vulkan/shared_memory.cpp
+@@ -337,7 +337,9 @@
+   switch (usage) {
+     case Usage::kComputeWrite:
+       stage_mask = VK_PIPELINE_STAGE_COMPUTE_SHADER_BIT;
+-      access_mask = VK_ACCESS_SHADER_READ_BIT;
++      // Resolves write this buffer; make writes available before later reads
++      // or overlapping writes. Read access alone cannot provide this dependency.
++      access_mask = VK_ACCESS_SHADER_READ_BIT | VK_ACCESS_SHADER_WRITE_BIT;
+       return;
+     case Usage::kTransferDestination:
+       stage_mask = VK_PIPELINE_STAGE_TRANSFER_BIT;
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -4976,7 +4976,9 @@
+     if (wait_result == VK_SUCCESS) {
+       fences_awaited += await_submission - submission_completed_;
+     } else {
+-      REXGPU_ERROR("Failed to await submission completion Vulkan fences");
++      REXGPU_ERROR("Failed to await submission completion Vulkan fences: result {}, "
++                   "awaited {}, completed {}, fences {}",
++                   int32_t(wait_result), await_submission, submission_completed_, fences_total);
+       if (wait_result == VK_ERROR_DEVICE_LOST) {
+         device_lost_ = true;
+       }

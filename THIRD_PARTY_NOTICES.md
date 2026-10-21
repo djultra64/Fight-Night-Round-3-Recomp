@@ -22,6 +22,14 @@ The optional local ISO setup uses extract-xiso. Preserve its complete license an
 
 This product includes software developed by in <in@fishtank.com>.
 
+## Windows runtime and ISO helper
+
+Windows packages include the imported Microsoft Visual C++ Release runtime libraries from the Visual Studio redistributable directory. They remain copyright Microsoft Corporation and retain their applicable license terms. The package includes a Microsoft runtime notice and records the distributed files and hashes.
+
+The Windows ISO helper also uses the upstream Win32 getopt and directory compatibility code. Complete original notices are included with the Windows package, including the Apache Software License 1.1 and Kevlin Henney’s directory implementation notice.
+
+This product includes software developed by the Apache Software Foundation (http://www.apache.org/).
+
 ## Original game
 
 Fight Night Round 3, its original executable, assets, trademarks and other game content belong to their respective rights holders. They are not licensed by this project. Users supply their own supported original data; no ISO, XEX, generated PowerPC source files, or extracted/game-derived asset files are included in the public distribution. The runtime binary contains compiled translated game code.

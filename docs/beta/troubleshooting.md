@@ -12,7 +12,7 @@ Setup does not overwrite an unrelated destination. Select the existing verified 
 
 ## The game will not start
 
-Run the launcher from a terminal and retain the error. Check Python 3.12+, the supported data, a working Vulkan driver, X11 or Wayland, and the package's required system libraries. The packaged Linux binary requires glibc 2.38+ and libstdc++ with GLIBCXX_3.4.32 (GCC 13.2) or newer. A missing GLIBC/GLIBCXX symbol usually means the distribution is too old for that binary; use a compatible system or build from source. The build records list runtime dependencies; the package does not replace your graphics driver.
+Run the launcher from a terminal and retain the error. Check Python 3.12+ and the supported data. On Linux, check the Vulkan driver, X11 or Wayland, and required system libraries. On Windows, check the Direct3D 12 graphics driver and use Windows 10 or 11 x64. The packaged Linux binary requires glibc 2.38+ and libstdc++ with GLIBCXX_3.4.32 (GCC 13.2) or newer. A missing GLIBC/GLIBCXX symbol usually means the distribution is too old for that binary; use a compatible system or build from source. The build records list runtime dependencies; the package does not replace your graphics driver.
 
 Use `--prepare-only` to isolate original-data verification and local frontend/glyph generation from game startup. If generated overrides are stale, rerun the launcher with `--regenerate-assets`. Keep your original game data intact.
 
@@ -24,7 +24,7 @@ The Linux defaults are `$XDG_DATA_HOME/fnr3` (otherwise `~/.local/share/fnr3`) f
 
 ## Performance or timing looks wrong
 
-Start with 720p, the original game clock and Mailbox/VSync. Disable external frame caps and injected overlays while reproducing the issue. 900p and 1080p use the 1440p 2× render tier, so those output choices have similar rendering cost. Higher presentation counts do not prove faster game simulation. FXAA and texture filtering are available in GRAPHICS; original MSAA is read-only.
+Start with 720p and the original game clock. Linux uses Vulkan Mailbox/VSync presentation; Windows uses Direct3D 12 presentation. Disable external frame caps and injected overlays while reproducing the issue. 900p and 1080p use the 1440p 2× render tier, so those output choices have similar rendering cost. Higher presentation counts do not prove faster game simulation. FXAA and texture filtering are available in GRAPHICS; original MSAA is read-only.
 
 ## Wrong controller prompt
 

@@ -1,12 +1,12 @@
 # Building from source
 
-The production build compiles the host, patched ReXGlue runtime and Vulkan GPU plugin together. It generates game-specific code locally from your verified XEX. It does not require or distribute pre-generated PowerPC sources.
+The production build compiles the host, patched ReXGlue runtime and Xenos GPU plugin together. Linux uses Vulkan; Windows automatically selects Direct3D 12. It generates game-specific code locally from your verified XEX. It does not require or distribute pre-generated PowerPC sources.
 
 ## Prerequisites
 
 Use an x86-64 Linux system with Python 3.12+, Git, CMake 3.25+, Ninja, LLVM/Clang 18+ and a Vulkan development/runtime environment. The Flatpak build route uses `org.freedesktop.Sdk//25.08` and its LLVM 20 extension. Python 3.12+ is required for safe archive extraction.
 
-Windows source support expects an x64 developer terminal, Python 3.12+, Git, CMake, Ninja, LLVM/Clang including `llvm-readobj`, and the Windows SDK. `--target` does not enable cross-compilation.
+Windows source support expects an x64 developer terminal with the MSVC build environment, Python 3.12+, Git, CMake, Ninja, LLVM/Clang including `llvm-readobj`, and the Windows SDK. The separate ISO extraction helper requires an x86-64 MinGW-w64 C compiler, such as GCC or Clang from MSYS2 UCRT64. The game and SDK continue to use native LLVM with the MSVC environment. `--target` does not enable cross-compilation.
 
 ## Prepare the inputs
 
@@ -47,19 +47,23 @@ python3 tools/port_build.py package --dry-run
 python3 tools/port_build.py package
 ```
 
-For an appropriately configured native toolchain, omit `--flatpak`. The build does not launch the game. Outputs are under `build/production/linux-amd64/`; the default package is `dist/fnr3-linux-amd64/`. Choose a new output directory with `package --output /absolute/path/to/new-package`; existing package destinations are rejected.
+For an appropriately configured native toolchain, omit `--flatpak`. The build does not launch the game. Outputs are under `build/production/linux-amd64/`; the default package is `dist/fight-night-round-3-recomp-v0.7-beta-linux-amd64/`. Choose a new output directory with `package --output /absolute/path/to/new-package`; existing package destinations are rejected.
 
 ## Windows
+
+The recipe compiles both renderer backends and automatically selects Direct3D 12 for the production runtime. No user backend setting is required.
 
 From the x64 developer terminal:
 
 ```powershell
-py -3 tools/port_build.py build --jobs 2
+py -3 tools/port_build.py build --jobs 2 --extractor-compiler "C:\msys64\ucrt64\bin\clang.exe"
 py -3 tools/port_build.py package --dry-run
 py -3 tools/port_build.py package
 ```
 
-Output directories are `build/production/win-amd64/` and `dist/fnr3-win-amd64/`.
+The compiler path above is an example. Set `--extractor-compiler` to your installed MSYS2 UCRT64 `gcc.exe` or `clang.exe`, or an equivalent MinGW-w64 C compiler targeting x86-64. The build validates the compiler target; this option applies only to the ISO helper.
+
+Output directories are `build/production/win-amd64/` and `dist/fight-night-round-3-recomp-v0.7-beta-win-amd64/`. The helper statically links its compiler runtime. Windows packages also include the required Microsoft release CRT libraries from the approved Visual C++ Redistributable source.
 
 ## Verify and package
 
