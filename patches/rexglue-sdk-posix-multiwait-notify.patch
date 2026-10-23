@@ -1,0 +1,113 @@
+diff --git a/src/core/threading_posix.cpp b/src/core/threading_posix.cpp
+--- a/src/core/threading_posix.cpp
++++ b/src/core/threading_posix.cpp
+@@ -267,6 +267,21 @@
+ }
+ #endif  // __APPLE__
+ 
++// Multi-wait predicates span several object mutexes. Publish a generation under
++// a separate mutex so a signal between predicate inspection and sleeping cannot
++// be lost. Never acquire an object mutex while holding multi_wait_mutex_.
++static std::mutex multi_wait_mutex_;
++static std::condition_variable multi_wait_condition_;
++static uint64_t multi_wait_generation_ = 0;
++
++static void NotifyMultiWaiters() {
++  {
++    std::lock_guard<std::mutex> lock(multi_wait_mutex_);
++    ++multi_wait_generation_;
++  }
++  multi_wait_condition_.notify_all();
++}
++
+ class PosixConditionBase {
+  public:
+   PosixConditionBase() {
+@@ -336,6 +351,13 @@
+                         : start_time + timeout;
+ 
+     while (true) {
++      uint64_t observed_generation;
++      {
++        std::lock_guard<std::mutex> lock(multi_wait_mutex_);
++        observed_generation = multi_wait_generation_;
++      }
++      // Release the wake mutex before locking objects: signalers hold an object
++      // mutex when publishing a new generation.
+       size_t first_signaled = std::numeric_limits<size_t>::max();
+       bool condition_met = false;
+       bool all_locked = true;
+@@ -411,14 +433,17 @@
+         return std::make_pair<WaitResult, size_t>(WaitResult::kTimeout, 0);
+       }
+ 
+-      if (timeout == std::chrono::milliseconds::max()) {
+-        std::this_thread::sleep_for(std::chrono::milliseconds(1));
+-      } else {
+-        // Alertable multi-waits use 1 ms slices. Truncating their remaining
+-        // sub-millisecond duration to zero turns every slice into a busy loop.
+-        // Keep the steady-clock deadline precise and retain the polling bound.
+-        std::this_thread::sleep_until(std::min(end_time, now + std::chrono::milliseconds(1)));
+-      }
++      std::unique_lock<std::mutex> wake_lock(multi_wait_mutex_);
++      auto generation_changed = [&] {
++        return multi_wait_generation_ != observed_generation;
++      };
++      // Robust object mutexes also become recoverable when their owner dies.
++      // That transition has no signal publisher, so periodically recheck even
++      // an infinite wait. Normal signals wake immediately through generation.
++      // Retain the absolute deadline, including the outer 1 ms alertable slice.
++      auto recovery_deadline = now + std::chrono::milliseconds(10);
++      multi_wait_condition_.wait_until(wake_lock, std::min(end_time, recovery_deadline),
++                                      generation_changed);
+     }
+   }
+ 
+@@ -451,6 +476,7 @@
+     auto lock = std::unique_lock<std::mutex>(mutex_);
+     signal_ = true;
+     cond_.notify_all();
++    NotifyMultiWaiters();
+     return true;
+   }
+ 
+@@ -488,6 +514,7 @@
+     }
+     count_ += release_count;
+     cond_.notify_all();
++    NotifyMultiWaiters();
+     return true;
+   }
+ 
+@@ -520,6 +547,7 @@
+       // Free to be acquired by another thread
+       if (count_ == 0) {
+         cond_.notify_all();
++        NotifyMultiWaiters();
+       }
+       return true;
+     }
+@@ -552,6 +580,7 @@
+     std::lock_guard<std::mutex> lock(mutex_);
+     signal_ = true;
+     cond_.notify_all();
++    NotifyMultiWaiters();
+     return true;
+   }
+ 
+@@ -980,6 +1009,7 @@
+       exit_code_ = exit_code;
+       signaled_ = true;
+       cond_.notify_all();
++      NotifyMultiWaiters();
+     }
+     if (is_current_thread) {
+       pthread_exit(reinterpret_cast<void*>(exit_code));
+@@ -1450,6 +1480,7 @@
+     thread->handle_.exit_code_ = 0;
+     thread->handle_.signaled_ = true;
+     thread->handle_.cond_.notify_all();
++    NotifyMultiWaiters();
+   }
+ 
+   current_thread_ = nullptr;

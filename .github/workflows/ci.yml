@@ -22,11 +22,13 @@ jobs:
           python -m unittest discover -s tests -p test_port_installer.py
           python -m unittest discover -s tests -p test_port_build.py
           python -m unittest discover -s tests -p test_windows_crt.py
-      - name: Check original-rate settings and input contracts
+          python -m unittest discover -s tests -p test_native60_transform.py
+          python -m unittest discover -s tests -p test_release_boundaries.py
+      - name: Check timing, settings and input contracts
         shell: bash
         run: |
           set -eu
-          for name in port_graphics_contract port_native_graphics_contract port_input_contract port_settings_contract port_menu_queue_contract; do
+          for name in port_timing_policy port_graphics_contract port_native_graphics_contract port_input_contract port_settings_contract port_menu_queue_contract; do
             g++ -std=c++23 -O2 -DNDEBUG -Isrc "tests/${name}.cpp" -o "/tmp/${name}"
             "/tmp/${name}"
           done

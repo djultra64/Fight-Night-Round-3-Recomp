@@ -1,6 +1,6 @@
 # Fight Night Round 3 Recomp — beta 0.7
 
-**Beta · Project work by DJ Ultra 64 — djultra64**
+**Beta · Project work by djultra64**
 
 Beta 0.7 targets normal-speed play at the original approximately 30 FPS game clock. Download the Linux archive or Windows runtime ZIP from [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v0.7), or follow the [build guide](building.md) for Linux and Windows source builds.
 

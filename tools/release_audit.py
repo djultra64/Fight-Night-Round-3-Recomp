@@ -4,9 +4,9 @@ import argparse
 from pathlib import Path
 import re
 
-FORBIDDEN_DIRECTORIES = {'.cache', '.codex', '.codex-attachments', '.agents', '.release',
+FORBIDDEN_DIRECTORIES = {'.research', '.superpowers', '.cache', '.codex', '.codex-attachments', '.agents', '.release',
                          'assets', 'runtime', 'logs', 'build', 'dist', '__pycache__'}
-FORBIDDEN_EXTENSIONS = {'.iso', '.xex', '.xbe', '.big', '.rdc', '.dmp', '.core', '.pyc'}
+FORBIDDEN_EXTENSIONS = {'.iso', '.xex', '.xbe', '.big', '.rdc', '.dmp', '.core', '.pyc', '.xsh', '.xpso', '.fxo', '.spv'}
 PRIVATE_TEXT = re.compile('alfredo' + r'lvera|Alfredo' + r' Olvera|/(?:var/)?home/[^/\s]+/|-----BEGIN (?:RSA |OPENSSH |EC )?PRIVATE KEY-----|gh[opusr]_[A-Za-z0-9]{30,}', re.I)
 
 

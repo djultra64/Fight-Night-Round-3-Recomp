@@ -1,5 +1,5 @@
 @echo off
-rem Work: djultra64 (DJ Ultra64).
+rem Work: djultra64.
 where py >nul 2>nul
 if errorlevel 1 goto use_python
 py -3 "%~dp0install.py" %*

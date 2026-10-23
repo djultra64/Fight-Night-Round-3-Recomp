@@ -24,7 +24,7 @@ The Linux defaults are `$XDG_DATA_HOME/fnr3` (otherwise `~/.local/share/fnr3`) f
 
 ## Performance or timing looks wrong
 
-Start with 720p and the original game clock. The Vulkan renderer supports Mailbox/VSync presentation when available. Disable external frame caps and injected overlays while reproducing the issue. 900p and 1080p use the 1440p 2× render tier, so those output choices have similar rendering cost. Higher presentation counts do not prove faster game simulation. FXAA and texture filtering are available in GRAPHICS; original MSAA is read-only.
+Start with 720p. Version 1.0 uses native 60 FPS gameplay while keeping intros at their stock 30 FPS cadence and preserving replay slow motion. The Vulkan renderer supports Mailbox/VSync presentation when available. Disable external frame caps and injected overlays while reproducing the issue. 900p and 1080p use the 1440p 2× render tier, so those output choices have similar rendering cost. A steady 60 FPS needs enough CPU/GPU headroom. Persistent caches and cached complete-pipeline prewarming reduce repeat compilation work; previously unseen content can still cause frame-time spikes. Higher presentation counts alone do not establish correct gameplay speed or smooth pacing. FXAA and texture filtering are available in GRAPHICS; original MSAA is read-only.
 
 ## Wrong controller prompt
 
@@ -32,4 +32,4 @@ Select the appropriate controller family in GRAPHICS if automatic identification
 
 ## Reporting a bug
 
-Include beta version, OS, CPU/GPU and driver, controller/connection, graphics settings, matchup or menu sequence, expected behavior and what happened. Include whether it reproduces without overlays. For a more detailed runtime log, pass `--log_level=info` through the launcher. Review logs for personal paths before sharing. Do not upload your ISO, XEX, assets, saves containing private information, generated PowerPC sources or game-derived diagnostic dumps.
+Include release version, OS, CPU/GPU and driver, controller/connection, graphics settings, matchup or menu sequence, expected behavior and what happened. Include whether it reproduces without overlays. For a more detailed runtime log, pass `--log_level=info` through the launcher. Review logs for personal paths before sharing. Do not upload your ISO, XEX, assets, saves containing private information, generated PowerPC sources or game-derived diagnostic dumps.

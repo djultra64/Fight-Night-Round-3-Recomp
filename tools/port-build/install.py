@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """Install private game data from your own Fight Night Round 3 (USA) ISO.
 
-Work: djultra64 (DJ Ultra64). No game files are downloaded or distributed.
+Work: djultra64. No game files are downloaded or distributed.
 """
 import argparse
 import hashlib

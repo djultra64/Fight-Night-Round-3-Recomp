@@ -1,0 +1,14 @@
+diff --git a/src/graphics/pipeline/texture/cache.cpp b/src/graphics/pipeline/texture/cache.cpp
+--- a/src/graphics/pipeline/texture/cache.cpp
++++ b/src/graphics/pipeline/texture/cache.cpp
+@@ -784,6 +784,10 @@ TextureCache::Texture::Texture(TextureCache& texture_cache, const TextureKey& key,
+ }
+ 
+ TextureCache::Texture::~Texture() {
++  // Project work: djultra64. Invalidation clears and recycles these handles
++  // under the global region. Lock before reading them, so cancellation cannot
++  // race with a callback and unlink an already recycled range.
++  auto global_lock = rex::thread::global_critical_region::AcquireDirect();
+   if (mips_watch_handle_) {
+     texture_cache().shared_memory().UnwatchMemoryRange(mips_watch_handle_);
+   }

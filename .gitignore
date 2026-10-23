@@ -16,3 +16,6 @@ __pycache__/
 /.codex-attachments/
 /generated/*
 !/generated/rexglue.cmake
+
+/.research/
+/.superpowers/

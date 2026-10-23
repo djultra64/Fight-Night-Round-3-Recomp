@@ -37,7 +37,7 @@ void ApplyGraphicsSettings() {
   for(const auto& [name,value]:keyboard_defaults)
     if(rex::cvar::GetFlagSource(name)==rex::cvar::Source::kDefault)
       if(!rex::cvar::SetFlagByName(name,value))throw std::runtime_error("Missing keyboard input capability: "+name);
-  REXLOG_INFO("FNR3: original-rate port, resolution {}, FXAA {}, filtering {}",
+  REXLOG_INFO("FNR3: graphics settings, resolution {}, FXAA {}, filtering {}",
               settings.resolution, settings.post_effect,
               settings.texture_filter);
 }

@@ -1,4 +1,4 @@
-"""Isolated Linux/Windows resolution-only production build. Project: djultra64.
+"""Isolated Linux/Windows production build. Project: djultra64.
 
 Never launches the game or updates accepted baseline builds.
 """
@@ -16,7 +16,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCT = 'Fight Night Round 3 Recomp'
-VERSION = '0.7.0'
+VERSION = '1.0.0'
 EXTRACT_XISO_PIN = '3f5b62cfe68f000b0e3c8a30104973f3a297948e'
 PIN = 'f5337cdc947ff6d4c4196737e2c807a48f2a1fc2'
 PATCHES = (
@@ -24,15 +24,18 @@ PATCHES = (
     'rexglue-sdk-vulkan-texture-exponent.patch',
     'rexglue-sdk-fnr3-optimizations.patch',
     'rexglue-sdk-frame-stats.patch',
+    'rexglue-sdk-pipeline-storage-pacing.patch',
     'rexglue-sdk-fnr3-xmp-delay.patch',
     'rexglue-fnr3-direct-resolve.patch',
     'rexglue-sdk-posix-wait-deadline.patch',
+    'rexglue-sdk-posix-multiwait-notify.patch',
     'rexglue-sdk-fnr3-audio-pacing.patch',
     'rexglue-sdk-fnr3-xma-no-lookahead.patch',
     'rexglue-sdk-posix-mapping-lifetime.patch',
     'rexglue-sdk-sdl-connected-discovery.patch',
     'rexglue-sdk-xma-drain-pending.patch',
     'rexglue-sdk-xma-split-frame-header.patch',
+    'rexglue-sdk-texture-watch-retirement.patch',
     'rexglue-sdk-vulkan-shared-memory-sync.patch',
     'rexglue-sdk-d3d12-queue-fence-result.patch',
     'rexglue-sdk-mnk-capture-coalescing.patch',
@@ -190,6 +193,8 @@ def prepare(target):
         else:
             (project / 'generated/default').mkdir(parents=True, exist_ok=True)
     (project / 'tools/port-build').mkdir(parents=True, exist_ok=True)
+    shutil.copy2(ROOT / 'tools/port-build/native60_transform.py',
+                 project / 'tools/port-build/native60_transform.py')
     shutil.copy2(ROOT / 'tools/port-build/sdk_loader_paths.cmake',
                  project / 'tools/port-build/sdk_loader_paths.cmake')
     bridge = project / 'tools/port-input/input_glyph_bridge.h'
@@ -298,7 +303,7 @@ def build_port(target, jobs, flatpak=False, sdk_only=False):
               'compiler_detection': {str(p.relative_to(build)): p.read_text()
                   for p in (build / 'CMakeFiles').glob('*/CMakeCXXCompiler.cmake')},
               'project_inputs': files_manifest(project), 'configuration': 'Release',
-              'backend': 'Vulkan', 'clock': 'original',
+              'backend': 'Vulkan', 'clock': 'native60-phase-preserved',
               'cmake_cache_sha256': sha(build / 'CMakeCache.txt')}
     stage = build / 'stage'
     if stage.exists():
@@ -331,7 +336,7 @@ def build_port(target, jobs, flatpak=False, sdk_only=False):
 def validate_stage(stage, record):
     if record.get('owner') != 'djultra64' or record.get('sdk', {}).get('sdk_commit') != PIN:
         raise ValueError('Unknown build provenance')
-    if record.get('configuration') != 'Release' or record.get('clock') != 'original':
+    if record.get('configuration') != 'Release' or record.get('clock') != 'native60-phase-preserved':
         raise ValueError('Unsupported build profile')
     if record['sdk'].get('patch_application') != 'explicit-directory-v1':
         raise ValueError('Unverified SDK patch application method')
@@ -465,8 +470,8 @@ def package_port(target, output, dry_run=False):
     public_record = {key: record[key] for key in (
         'owner', 'target', 'sdk', 'sdk_inputs_sha256', 'configuration', 'clock',
         'artifacts', 'runtime_redistributables') if key in record}
-    public_record.update({'product': PRODUCT, 'version': VERSION, 'channel': 'beta',
-                          'backend': record.get('backend', 'Vulkan'), 'simulation_hz': 30,
+    public_record.update({'product': PRODUCT, 'version': VERSION, 'channel': 'release',
+                          'backend': record.get('backend', 'Vulkan'), 'simulation_hz': 60,
                           'loader_dependencies': record.get('loader_dependencies', {})})
     write_json(output / 'build-record.json', public_record)
     licenses = output / 'licenses'
@@ -524,9 +529,9 @@ def package_port(target, output, dry_run=False):
             'Install the Vulkan loader and a working Vulkan 1.3 GPU driver.\n'
             'Desktop display/audio/input services are provided by your Linux system.\n')
     (output / 'README.txt').write_text(
-        PRODUCT + ' v0.7 Beta\nProject work: djultra64\n'
+        PRODUCT + ' v1.0\nProject work: djultra64\n'
         'ReXGlue and dependencies retain their respective authors and licenses.\n'
-        'Original 30 FPS game clock. ' + public_record['backend'] + ' renderer.\n'
+        'Native 60 Hz gameplay with original game speed and slow motion. ' + public_record['backend'] + ' renderer.\n'
         'Original game assets are not included. Supply your verified supported USA game data.\n'
         'Requires Python 3.12+ and an x86-64-v2 CPU.\n'
         + platform_help +
@@ -536,9 +541,9 @@ def package_port(target, output, dry_run=False):
         'The supplied prep scripts verify original asset pins; derived assets remain private.\n'
         'Keep saves/settings and shader caches outside this package.\n'
         'The runtime, Xenos GPU plugin, SDL3 and ISO extractor are bundled.\n'
-        'Build and package hashes are recorded; this is a public beta.\n', encoding='utf-8')
+        'Build and package hashes are recorded.\n', encoding='utf-8')
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md',
-                 'docs/beta/release-notes-0.7.md', 'docs/beta/installation.md'):
+                 'docs/beta/release-notes-1.0.md', 'docs/beta/installation.md'):
         destination = output / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, destination)
@@ -547,7 +552,7 @@ def package_port(target, output, dry_run=False):
         if target == 'win-amd64':
             readme.write('This product includes software developed by the Apache Software Foundation (http://www.apache.org/).\n')
     write_json(output / 'package-manifest.json', {'schema': 1, 'target': target,
-               'product': PRODUCT, 'version': VERSION, 'channel': 'beta',
+               'product': PRODUCT, 'version': VERSION, 'channel': 'release',
                'iso_extractor_commit': EXTRACT_XISO_PIN,
                'owner': 'djultra64', 'game_assets_included': False,
                'files': files_manifest(output)})
@@ -580,7 +585,7 @@ def main():
         if args.action == 'build':
             build_extractor(target, args.flatpak, args.extractor_compiler)
     else:
-        output = args.output or ROOT / 'dist' / ('fight-night-round-3-recomp-v0.7-beta-' + target)
+        output = args.output or ROOT / 'dist' / ('fight-night-round-3-recomp-v1.0-' + target)
         package_port(target, output.resolve(), args.dry_run)
 
 

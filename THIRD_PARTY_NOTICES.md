@@ -1,6 +1,6 @@
 # Third-party notices
 
-Project work: **DJ Ultra 64 — djultra64**.
+Project work: **djultra64**.
 
 This document is a notice index, not a replacement for any dependency's license. Preserve the complete license and copyright texts shipped with the relevant source or package.
 

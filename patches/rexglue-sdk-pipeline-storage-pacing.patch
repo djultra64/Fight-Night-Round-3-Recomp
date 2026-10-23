@@ -1,0 +1,83 @@
+--- a/include/rex/graphics/vulkan/pipeline_cache.h
++++ b/include/rex/graphics/vulkan/pipeline_cache.h
+@@ -111,6 +111,8 @@
+   fnr3::pipeline_cache::Identity driver_cache_identity_{};
+   std::filesystem::path driver_cache_path_;
+   std::atomic<uint64_t> driver_cache_generation_{0};
++  // Saved generation belongs to the storage writer between its start and join.
++  // Startup and final saves run only outside that lifetime.
+   uint64_t driver_cache_saved_generation_ = 0;
+   uint32_t driver_cache_submissions_ = 0;
+   REXPACKEDSTRUCT(ShaderStoredHeader, {
+@@ -468,6 +470,7 @@
+   std::deque<PipelineStoredDescription> storage_write_pipeline_queue_;
+   bool storage_write_flush_shaders_ = false;
+   bool storage_write_flush_pipelines_ = false;
++  bool storage_write_driver_cache_ = false;
+   bool storage_write_thread_shutdown_ = false;
+   std::unique_ptr<rex::thread::Thread> storage_write_thread_;
+ 
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -797,6 +797,7 @@
+   // Start the storage writing thread.
+   storage_write_flush_shaders_ = false;
+   storage_write_flush_pipelines_ = false;
++  storage_write_driver_cache_ = false;
+   storage_write_thread_shutdown_ = false;
+   storage_write_thread_ = rex::thread::Thread::Create({}, [this]() { StorageWriteThread(); });
+   assert_not_null(storage_write_thread_);
+@@ -833,10 +834,14 @@
+ }
+ 
+ void VulkanPipelineCache::EndSubmission() {
+-  if (++driver_cache_submissions_ % 600 == 0) SaveDriverCache();
+-  if (shader_storage_file_flush_needed_ || pipeline_storage_file_flush_needed_) {
++  const bool save_driver_cache = ++driver_cache_submissions_ % 600 == 0;
++  if (save_driver_cache || shader_storage_file_flush_needed_ ||
++      pipeline_storage_file_flush_needed_) {
+     {
+       std::lock_guard<std::mutex> lock(storage_write_request_lock_);
++      // Coalesce snapshots; Vulkan cache retrieval and disk I/O belong to the
++      // storage writer, never the submission thread.
++      storage_write_driver_cache_ |= save_driver_cache;
+       if (shader_storage_file_flush_needed_) {
+         storage_write_flush_shaders_ = true;
+       }
+@@ -3744,9 +3749,14 @@
+     const Shader* shader = nullptr;
+     PipelineStoredDescription pipeline_description;
+     bool write_pipeline = false;
++    bool save_driver_cache = false;
+     {
+       std::unique_lock<std::mutex> lock(storage_write_request_lock_);
+-      if (storage_write_thread_shutdown_) {
++      // Drain pending records, flushes and snapshots before the owner joins
++      // this writer and closes the files and Vulkan cache.
++      if (storage_write_thread_shutdown_ && storage_write_shader_queue_.empty() &&
++          storage_write_pipeline_queue_.empty() && !storage_write_flush_shaders_ &&
++          !storage_write_flush_pipelines_ && !storage_write_driver_cache_) {
+         return;
+       }
+       if (!storage_write_shader_queue_.empty()) {
+@@ -3765,10 +3775,19 @@
+         storage_write_flush_pipelines_ = false;
+         flush_pipelines = true;
+       }
+-      if (!shader && !write_pipeline) {
++      save_driver_cache = storage_write_driver_cache_;
++      storage_write_driver_cache_ = false;
++      // Local flushes run at the top of the next iteration. They must make
++      // progress even when no further producer ever sends a notification.
++      if (!shader && !write_pipeline && !flush_shaders && !flush_pipelines &&
++          !save_driver_cache) {
+         storage_write_request_cond_.wait(lock);
+         continue;
+       }
++    }
++
++    if (save_driver_cache) {
++      SaveDriverCache();
+     }
+ 
+     if (shader) {

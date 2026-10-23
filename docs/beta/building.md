@@ -47,7 +47,7 @@ python3 tools/port_build.py package --dry-run
 python3 tools/port_build.py package
 ```
 
-For an appropriately configured native toolchain, omit `--flatpak`. The build does not launch the game. Outputs are under `build/production/linux-amd64/`; the default package is `dist/fight-night-round-3-recomp-v0.7-beta-linux-amd64/`. Choose a new output directory with `package --output /absolute/path/to/new-package`; existing package destinations are rejected.
+For an appropriately configured native toolchain, omit `--flatpak`. The production target includes phase-specific native 60 FPS gameplay timing, stock-rate intros, fractional crowd animation advancement and elapsed-time replay timing. The build does not launch the game. Outputs are under `build/production/linux-amd64/`; the default package is `dist/fight-night-round-3-recomp-v1.0-linux-amd64/`. Choose a new output directory with `package --output /absolute/path/to/new-package`; existing package destinations are rejected.
 
 ## Windows
 
@@ -63,7 +63,7 @@ py -3 tools/port_build.py package
 
 The compiler path above is an example. Set `--extractor-compiler` to your installed MSYS2 UCRT64 `gcc.exe` or `clang.exe`, or an equivalent MinGW-w64 C compiler targeting x86-64. The build validates the compiler target; this option applies only to the ISO helper.
 
-Output directories are `build/production/win-amd64/` and `dist/fight-night-round-3-recomp-v0.7-beta-win-amd64/`. The helper statically links its compiler runtime. Windows packages also include the required Microsoft release CRT libraries from the approved Visual C++ Redistributable source.
+Output directories are `build/production/win-amd64/` and `dist/fight-night-round-3-recomp-v1.0-win-amd64/`. The helper statically links its compiler runtime. Windows packages also include the required Microsoft release CRT libraries from the approved Visual C++ Redistributable source.
 
 ## Verify and package
 

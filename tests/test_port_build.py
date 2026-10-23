@@ -29,7 +29,7 @@ class PackageTests(unittest.TestCase):
             (self.stage / name).write_bytes(b'compiled fixture')
         return {'owner': 'djultra64', 'target': target,
                 'sdk': {'sdk_commit': pb.PIN, 'patch_application': 'explicit-directory-v1', 'patches': {p: 'hash' for p in pb.PATCHES}},
-                'configuration': 'Release', 'clock': 'original',
+                'configuration': 'Release', 'clock': 'native60-phase-preserved',
                 'artifacts': pb.files_manifest(self.stage)}
 
     def test_linux_and_windows_required_sets(self):
@@ -357,7 +357,7 @@ class PackageTests(unittest.TestCase):
         self.assertFalse(output.exists())
         run.assert_not_called()
         # Exercise an actual destination with spaces and preserve upstream notices.
-        for name in ('tools/frontend_overrides.py', 'tools/port-input/build_glyph_overrides.py', 'tools/port-build/launch.py', 'tools/port-input/original-glyph-hashes.json', 'config/input-manifest.json', 'tools/port-build/install.py', 'tools/port-build/install.sh', 'tools/port-build/install.cmd', '.cache/extract-xiso/LICENSE.TXT', 'build/iso-extractor/linux-amd64/extract-xiso', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/beta/release-notes-0.7.md', 'docs/beta/installation.md'):
+        for name in ('tools/frontend_overrides.py', 'tools/port-input/build_glyph_overrides.py', 'tools/port-build/launch.py', 'tools/port-input/original-glyph-hashes.json', 'config/input-manifest.json', 'tools/port-build/install.py', 'tools/port-build/install.sh', 'tools/port-build/install.cmd', '.cache/extract-xiso/LICENSE.TXT', 'build/iso-extractor/linux-amd64/extract-xiso', 'LICENSE', 'THIRD_PARTY_NOTICES.md', 'docs/beta/release-notes-1.0.md', 'docs/beta/installation.md'):
             destination = self.root / name
             destination.parent.mkdir(parents=True, exist_ok=True)
             destination.write_text('fixture source')
@@ -372,8 +372,10 @@ class PackageTests(unittest.TestCase):
             pb.package_port(target, output)
         manifest = json.loads((output / 'package-manifest.json').read_text())
         self.assertFalse(manifest['game_assets_included'])
-        self.assertEqual(manifest['version'], '0.7.0')
+        self.assertEqual(manifest['version'], '1.0.0')
         self.assertEqual(manifest['product'], 'Fight Night Round 3 Recomp')
+        self.assertEqual(manifest['channel'], 'release')
+        self.assertEqual(json.loads((output / 'build-record.json').read_text())['simulation_hz'], 60)
         public = (output / 'build-record.json').read_text()
         self.assertNotIn('/private/developer', public)
         self.assertNotIn('generated/proprietary', public)
