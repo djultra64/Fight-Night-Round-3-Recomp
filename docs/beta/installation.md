@@ -1,6 +1,6 @@
 # Installation and first launch
 
-Download the Linux archive or Windows ZIP from [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0). See the [build guide](building.md) for Linux and Windows source builds.
+Download the Linux archive or Windows ZIP from [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.1). See the [build guide](building.md) for Linux and Windows source builds.
 
 ## What you need
 

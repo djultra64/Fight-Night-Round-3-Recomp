@@ -1,6 +1,8 @@
 # Fight Night Round 3 Recomp
 
-**Version 1.0 · Project work by [djultra64](https://github.com/djultra64)**
+**Version 1.0.1 · Project work by [djultra64](https://github.com/djultra64)**
+
+Version 1.0.1 fixes a diagnosed gameplay crash caused by missing indirect guest callbacks. See the [1.0.1 release notes](docs/beta/release-notes-1.0.1.md).
 
 An unofficial PC recompilation of Fight Night Round 3 for Xbox 360, built with ReXGlue and the Xenos renderer: Vulkan on Linux and Windows. Version 1.0 brings native 60 FPS gameplay while preserving the original gameplay speed, with configurable resolution and a native settings interface.
 
@@ -8,7 +10,7 @@ You must supply your own supported USA game data. No disc images, XEX executable
 
 ## Release status
 
-Version 1.0 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
+Version 1.0.1 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
 
 Read the [known issues](docs/beta/known-issues.md) before installing. Downloads are available through [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases).
 
@@ -30,7 +32,7 @@ A steady 60 FPS requires enough CPU/GPU headroom. Cached pipeline prewarming red
 
 ## Get started
 
-[Download version 1.0](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
+[Download version 1.0.1](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.1): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
 
 Linux:
 
@@ -73,6 +75,7 @@ PRs and forks improving frame pacing, performance or correct higher frame rates 
 - [Controls and controller prompts](docs/beta/controls.md)
 - [Known issues](docs/beta/known-issues.md)
 - [Troubleshooting](docs/beta/troubleshooting.md)
+- [Version 1.0.1 release notes](docs/beta/release-notes-1.0.1.md)
 - [Version 1.0 release notes](docs/beta/release-notes-1.0.md)
 - [Historical beta 0.7 release notes](docs/beta/release-notes-0.7.md)
 - [Changelog](CHANGELOG.md), [contributing](CONTRIBUTING.md), [security](SECURITY.md)

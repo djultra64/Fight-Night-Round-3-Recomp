@@ -62,3 +62,34 @@ longjmp_address = 0x826FE5B0
 # Independent runtime trap during 30 FPS control on 2026-10-20. Ten original
 # instructions reset object state and tail-call 0x82137D28 at 0x8213EE04.
 0x8213EDE0 = { size = 0x28 }
+
+# Native1.0 SIGABRT core209578 (2026-10-22): indirect call from
+# 0x823479F4 to omitted callback0x8234A348. This contiguous family consists
+# of independent four-instruction virtual dispatch thunks (lwz/lwz/mtctr/bctr).
+# Addresses are constructed dynamically; 0x8234A2C8 is already discovered.
+# Explicitly emit the remaining25 original bodies, each bounded by its bctr.
+0x8234A2D8 = { size = 0x10 }
+0x8234A2E8 = { size = 0x10 }
+0x8234A2F8 = { size = 0x10 }
+0x8234A308 = { size = 0x10 }
+0x8234A318 = { size = 0x10 }
+0x8234A328 = { size = 0x10 }
+0x8234A338 = { size = 0x10 }
+0x8234A348 = { size = 0x10 }
+0x8234A358 = { size = 0x10 }
+0x8234A368 = { size = 0x10 }
+0x8234A378 = { size = 0x10 }
+0x8234A388 = { size = 0x10 }
+0x8234A398 = { size = 0x10 }
+0x8234A3A8 = { size = 0x10 }
+0x8234A3B8 = { size = 0x10 }
+0x8234A3C8 = { size = 0x10 }
+0x8234A3D8 = { size = 0x10 }
+0x8234A3E8 = { size = 0x10 }
+0x8234A3F8 = { size = 0x10 }
+0x8234A408 = { size = 0x10 }
+0x8234A418 = { size = 0x10 }
+0x8234A428 = { size = 0x10 }
+0x8234A438 = { size = 0x10 }
+0x8234A448 = { size = 0x10 }
+0x8234A458 = { size = 0x10 }

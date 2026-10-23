@@ -34,7 +34,7 @@ public:
 
   static std::unique_ptr<rex::ui::WindowedApp>
   Create(rex::ui::WindowedAppContext &ctx) {
-    return std::unique_ptr<Fnr3App>(new Fnr3App(ctx, "Fight Night Round 3 Recomp v1.0", PPCImageConfig));
+    return std::unique_ptr<Fnr3App>(new Fnr3App(ctx, "Fight Night Round 3 Recomp v1.0.1", PPCImageConfig));
   }
 
   // Override virtual hooks for customization:

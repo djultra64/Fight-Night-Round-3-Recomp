@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.1
+
+- Fixed a diagnosed gameplay crash caused by missing indirect guest callback wrappers.
+- Explicitly compile the 25 omitted original wrappers in the affected family for Linux and Windows, preserving their original virtual dispatch behavior.
+- Retained the 1.0 native 60 FPS timing, Vulkan rendering and frame-pacing improvements.
+
+See the [1.0.1 release notes](docs/beta/release-notes-1.0.1.md).
+
 ## 1.0
 
 - Notification-driven Linux multi-object waits remove fixed polling latency while retaining abandoned-lock recovery.
