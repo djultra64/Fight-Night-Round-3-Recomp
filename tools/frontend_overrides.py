@@ -366,13 +366,14 @@ def inspect_main_menu_patch(data: bytes) -> dict:
 
 
 GRAPHICS_CALLBACKS = ('PortGraphicsEvent', 'PortGetResolution', 'PortGetFullscreen',
-                      'PortGetFxaa', 'PortGetFiltering', 'PortGetFamily', 'PortGetBinding', 'PortGetActiveFamily')
+                      'PortGetFxaa', 'PortGetFiltering', 'PortGetFamily', 'PortGetFrameRate', 'PortGetBinding', 'PortGetActiveFamily')
 GRAPHICS_CHOICES = (
     ('RESOLUTION: ', ('1280 X 720', '1600 X 900', '1920 X 1080', '2560 X 1440', '3200 X 1800', '3840 X 2160'), 'PortGetResolution'),
     ('FULLSCREEN: ', ('OFF', 'ON'), 'PortGetFullscreen'),
     ('FXAA: ', ('OFF', 'ON', 'EXTREME'), 'PortGetFxaa'),
     ('FILTERING: ', ('ORIGINAL', 'ANISOTROPIC 1X', 'ANISOTROPIC 2X', 'ANISOTROPIC 4X', 'ANISOTROPIC 8X', 'ANISOTROPIC 16X'), 'PortGetFiltering'),
     ('CONTROLLER: ', ('AUTOMATIC', 'XBOX', 'PLAYSTATION', 'NINTENDO SWITCH'), 'PortGetFamily'),
+    ('FRAME RATE: ', ('30 FPS', '60 FPS'), 'PortGetFrameRate'),
 )
 
 
@@ -539,30 +540,33 @@ def graphics_event_handler(script, register_table):
     # owns its page selection, using the same verified widget setter directly.
     for direction,step in [('navigate_up',-1),('navigate_down',1)]:
         script.label(direction);script.sound('updown')
-        for selection in range(8):
-            selected();script.integer(selection);script.emit(0x66)
-            script.jump(0x9d,f'{direction}_{selection}')
-        script.emit(0x76,0x3e)
-        for selection in range(8):
-            script.label(f'{direction}_{selection}')
-            script.set_global('_fnr3GraphicsSelection',(selection+step)%8)
-            refresh();script.emit(0x76,0x3e)
+        script.global_path('_fnr3GraphicsPage');script.jump(0x9d,direction+'_mapping')
+        for page, count in [('graphics', len(GRAPHICS_CHOICES)+3), ('mapping', 8)]:
+            if page=='mapping':script.label(direction+'_mapping')
+            for selection in range(count):
+                selected();script.integer(selection);script.emit(0x66)
+                script.jump(0x9d,f'{direction}_{page}_{selection}')
+            script.emit(0x76,0x3e)
+            for selection in range(count):
+                script.label(f'{direction}_{page}_{selection}')
+                script.set_global('_fnr3GraphicsSelection',(selection+step)%count)
+                refresh();script.emit(0x76,0x3e)
     script.label('advance')
     script.global_path('_fnr3GraphicsPage');script.jump(0x9d,'mapping_advance')
-    selected(); script.integer(5); script.emit(0x66); script.jump(0x9d,'open_mapping')
-    selected(); script.integer(6); script.emit(0x66); script.jump(0x9d, 'save')
-    selected(); script.integer(7); script.emit(0x66); script.jump(0x9d, 'save_restart')
+    selected(); script.integer(6); script.emit(0x66); script.jump(0x9d,'open_mapping')
+    selected(); script.integer(7); script.emit(0x66); script.jump(0x9d, 'save')
+    selected(); script.integer(8); script.emit(0x66); script.jump(0x9d, 'save_restart')
     script.jump(0x99, 'next')
     for label, base in [('previous', 10), ('next', 20)]:
         script.label(label)
         script.global_path('_fnr3GraphicsPage');script.jump(0x9d,'mapping_'+label)
-        for field in range(5):
+        for field in range(len(GRAPHICS_CHOICES)):
             selected(); script.integer(field); script.emit(0x66); script.jump(0x9d, f'{label}_{field}')
         script.emit(0x76, 0x3e)
-        for field in range(5):
+        for field in range(len(GRAPHICS_CHOICES)):
             script.label(f'{label}_{field}'); script.set_global('_fnr3GraphicsSelection', field)
             script.sound('updown');script.event(base + field); refresh(); script.emit(0x76, 0x3e)
-    for label,command,selection in [('save',2,6),('save_restart',3,7)]:
+    for label,command,selection in [('save',2,7),('save_restart',3,8)]:
         script.label(label);script.sound('confirm');script.event(command,discard=False);script.jump(0x9d,label+'_ok')
         script.set_global('_fnr3GraphicsStatus',2);script.jump(0x99,label+'_refresh')
         script.label(label+'_ok');script.set_global('_fnr3GraphicsStatus',1)
@@ -577,7 +581,7 @@ def graphics_event_handler(script, register_table):
     script.label('open_mapping');script.sound('confirm');script.set_global('_fnr3GraphicsPage',1)
     script.set_global('_fnr3GraphicsSelection',0);refresh();script.emit(0x76,0x3e)
     script.label('mapping_back');script.sound('cancel');script.set_global('_fnr3GraphicsPage',0)
-    script.set_global('_fnr3GraphicsSelection',5);refresh();script.emit(0x76,0x3e)
+    script.set_global('_fnr3GraphicsSelection',6);refresh();script.emit(0x76,0x3e)
     script.label('mapping_advance')
     selected();script.integer(5);script.emit(0x66);script.jump(0x9d,'binding_prev_page')
     selected();script.integer(6);script.emit(0x66);script.jump(0x9d,'binding_next_page')
@@ -706,7 +710,7 @@ def inspect_options_patch(data: bytes) -> dict:
     normal = actions[actions.index(dispatch)+4].target
     resume = next(a.end for a in actions if a.offset >= normal and a.opcode == 0x17)
     return {'native_graphics_row': True, 'callback': 'AptTaskMessages.PortGraphicsEvent',
-            'native_graphics_page': True, 'setting_rows': 5,
+            'native_graphics_page': True, 'setting_rows': len(GRAPHICS_CHOICES),
             'graphics_dispatch': dispatch.offset, 'retail_resume': resume,
             'event_handler': functions[4].body, 'event_end': functions[4].end,
             'refresh_body': functions[-1].body, 'refresh_end': functions[-1].end,

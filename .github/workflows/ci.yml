@@ -28,8 +28,8 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for name in port_timing_policy port_graphics_contract port_native_graphics_contract port_input_contract port_settings_contract port_menu_queue_contract; do
-            g++ -std=c++23 -O2 -DNDEBUG -Isrc "tests/${name}.cpp" -o "/tmp/${name}"
+          for name in port_timing_policy port_graphics_contract port_native_graphics_contract port_input_contract port_settings_contract port_menu_queue_contract port_appearance_contract; do
+            g++ -std=c++23 -O2 -DNDEBUG -pthread -Isrc "tests/${name}.cpp" -o "/tmp/${name}"
             "/tmp/${name}"
           done
           g++ -std=c++23 -O2 -DNDEBUG -pthread -DFNR3_FRAME_TIMES_NO_GUEST_HOOK -Isrc src/port_frame_times.cpp tests/port_frame_times_contract.cpp -o /tmp/port_frame_times_contract

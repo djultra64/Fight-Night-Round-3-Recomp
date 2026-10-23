@@ -23,9 +23,12 @@ inline constexpr auto Resolutions() {
 struct GraphicsSettings {
   std::string resolution = "720p", post_effect = "none", texture_filter = "4x";
   bool fullscreen = false;
+  unsigned frame_rate = 60;
 };
 using FlagList = std::vector<std::pair<std::string, std::string>>;
 inline FlagList GraphicsFlags(const GraphicsSettings &settings) {
+  if(settings.frame_rate!=30 && settings.frame_rate!=60)
+    throw std::invalid_argument("Unsupported port frame rate");
   const Resolution *selected = nullptr;
   const auto resolutions = Resolutions();
   for (const auto &p : resolutions)
@@ -49,7 +52,8 @@ inline FlagList GraphicsFlags(const GraphicsSettings &settings) {
       filter = value;
   if (filter == -2)
     throw std::invalid_argument("Unsupported port texture filter");
-  return {{"fullscreen", settings.fullscreen ? "true" : "false"},
+  return {{"fnr3_native60_beta", settings.frame_rate==60?"true":"false"},
+          {"fullscreen", settings.fullscreen ? "true" : "false"},
           {"resolution_scale", std::to_string(selected->scale)},
           {"draw_resolution_scale_x", std::to_string(selected->scale)},
           {"draw_resolution_scale_y", std::to_string(selected->scale)},

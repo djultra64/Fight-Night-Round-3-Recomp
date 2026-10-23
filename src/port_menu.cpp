@@ -48,8 +48,8 @@ void NativeEvent(PPCContext& ctx,uint8_t* base){
    else if(event==1){settings_session.Cancel();result=1;}
    else if(event==3){settings_session.Save([](const PortSettings& s){PersistPortSettings(settings_path,s);});if(auto q=dispatch.load())result=q->Request(MenuAction::Restart)?1:0;}
    else if(event==2){settings_session.Save([](const PortSettings& s){PersistPortSettings(settings_path,s);});result=1;}
-   else if(event>=10&&event<15){settings_session.Step(event-10,-1);result=1;}
-   else if(event>=20&&event<25){settings_session.Step(event-20,1);result=1;}
+   else if(event>=10&&event<16){settings_session.Step(event-10,-1);result=1;}
+   else if(event>=20&&event<26){settings_session.Step(event-20,1);result=1;}
    else if(event>=100&&event<114){settings_session.StepBinding(event-100,-1);result=1;}
    else if(event>=200&&event<214){settings_session.StepBinding(event-200,1);result=1;}
    else if(event==300){settings_session.ResetBindings();result=1;}
@@ -77,7 +77,7 @@ void NativeActiveFamily(PPCContext& ctx,uint8_t* base){
  MakeAptIntegerResult(ctx,base,result,value_api);
 }
 struct NativeMethod {const char* name;PPCFunc* function;uint32_t thunk=0,address=0;};
-std::array<NativeMethod,8> methods={{{"PortGraphicsEvent",NativeEvent},{"PortGetResolution",NativeGet<0>},{"PortGetFullscreen",NativeGet<1>},{"PortGetFxaa",NativeGet<2>},{"PortGetFiltering",NativeGet<3>},{"PortGetFamily",NativeGet<4>},{"PortGetBinding",NativeBinding},{"PortGetActiveFamily",NativeActiveFamily}}};
+std::array<NativeMethod,9> methods={{{"PortGraphicsEvent",NativeEvent},{"PortGetResolution",NativeGet<0>},{"PortGetFullscreen",NativeGet<1>},{"PortGetFxaa",NativeGet<2>},{"PortGetFiltering",NativeGet<3>},{"PortGetFamily",NativeGet<4>},{"PortGetFrameRate",NativeGet<5>},{"PortGetBinding",NativeBinding},{"PortGetActiveFamily",NativeActiveFamily}}};
 }
 void InitializePortMenus(rex::Runtime& runtime,std::shared_ptr<MenuQueue> queue,const std::filesystem::path& path){
  if(!queue)throw std::runtime_error("Missing UI menu queue");

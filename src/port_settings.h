@@ -29,6 +29,7 @@ inline std::string SerializePortSettings(const PortSettings& s) {
     "fnr3_fxaa = \""+s.graphics.post_effect+"\"\n"
     "fnr3_texture_filter = \""+s.graphics.texture_filter+"\"\n"
     "fnr3_fullscreen = "+(s.graphics.fullscreen?"true":"false")+"\n"
+    "fnr3_frame_rate = \""+std::to_string(s.graphics.frame_rate)+"\"\n"
     "fnr3_input_family = \""+s.input_family+"\"\n"
     "fnr3_action_bindings = \""+mapping+"\"\n";
 }

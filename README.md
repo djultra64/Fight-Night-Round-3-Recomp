@@ -14,6 +14,12 @@ Version 1.0.1 is a regular release with Linux and Windows Vulkan runtime package
 
 Read the [known issues](docs/beta/known-issues.md) before installing. Downloads are available through [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases).
 
+## Development updates
+
+The current source branch adds **FRAME RATE: 30 FPS / 60 FPS** to **OPTIONS → GRAPHICS**, with 60 FPS as the default. Use **SAVE AND RESTART** to apply a change; **SAVE** keeps the current session's timing until the next launch. Intros retain their original cadence, and the 60 FPS mode preserves replay slow motion.
+
+Custom boxer hair-color baking now requests GPU readback only for the textures consumed by the original CPU compressor. Saved color values are preserved without enabling full-scene readback during combat. These source updates are not included in the existing 1.0.1 downloads.
+
 ## Features
 
 - Native **OPTIONS → GRAPHICS** page with resolution, fullscreen, FXAA and texture filtering.

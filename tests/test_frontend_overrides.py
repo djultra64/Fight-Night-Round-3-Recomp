@@ -2,6 +2,7 @@
 import importlib.util
 from pathlib import Path
 import struct
+import re
 import sys
 import tempfile
 import unittest
@@ -25,7 +26,7 @@ class NativeVM:
     def __init__(self, data, constants):
         self.data, self.constants = data, constants
         self.stack, self.calls, self.rows = [], [], []
-        self.selected, self.values, self.status = 0, [2, 1, 0, 3, 0], 1
+        self.selected, self.values, self.status = 0, [2, 1, 0, 3, 0, 1], 1
         self.family,self.bindings=1,list(range(14))
         self.globals = {'AptTaskMessages': 'host', 'options': {'m_screen': {
             'm_title': 'title', 'mainControl': {'mainMenu': 'menu'}}, 'm_class': 'class'},
@@ -42,12 +43,12 @@ class NativeVM:
         if obj == 'host':
             if name == 'PortGraphicsEvent':
                 command = args[0]
-                if 10 <= command < 15: self.values[command-10] = (self.values[command-10]-1) % len(m.GRAPHICS_CHOICES[command-10][1])
-                if 20 <= command < 25: self.values[command-20] = (self.values[command-20]+1) % len(m.GRAPHICS_CHOICES[command-20][1])
+                if 10 <= command < 16: self.values[command-10] = (self.values[command-10]-1) % len(m.GRAPHICS_CHOICES[command-10][1])
+                if 20 <= command < 26: self.values[command-20] = (self.values[command-20]+1) % len(m.GRAPHICS_CHOICES[command-20][1])
                 return self.status
             if name=='PortGetActiveFamily':return self.family
             if name=='PortGetBinding':return self.bindings[args[0]]
-            return self.values[list(m.GRAPHICS_CALLBACKS[1:6]).index(name)]
+            return self.values[[row[2] for row in m.GRAPHICS_CHOICES].index(name)]
         if obj=='title' and name=='setText':self.native_title=args[0]
         if obj=='class' and name=='mainInitGui' and self.retail_rows is not None:
             # Retail's verified initializer appends, then sets title, selected
@@ -219,6 +220,21 @@ class FrontendOverrides(unittest.TestCase):
         vm.functions['_fnr3GraphicsRefresh']=(report['refresh_body'], report['refresh_end'])
         return data,report,vm
 
+    def test_frame_rate_row_changes_only_30_60_and_preserves_mapping(self):
+        data,report,vm=self.graphics_movie()
+        vm.globals.update(_fnr3GraphicsActive=1,_fnr3GraphicsPage=0,_fnr3GraphicsStatus=0)
+        vm.run(report['refresh_body'],report['refresh_end'])
+        self.assertEqual(vm.rows[5], 'FRAME RATE: 60 FPS')
+        self.assertEqual(vm.rows[6], 'BUTTON MAPPING')
+        vm.selected=5;vm.regs[8]=vm.globals['INPUTCODE']['LEFT']
+        vm.run(report['event_handler'],report['event_end'])
+        self.assertEqual(vm.rows[5], 'FRAME RATE: 30 FPS')
+        self.assertIn(('host','PortGraphicsEvent',[15]),vm.calls)
+        vm.regs[8]=vm.globals['INPUTCODE']['RIGHT']
+        vm.run(report['event_handler'],report['event_end'])
+        self.assertEqual(vm.rows[5], 'FRAME RATE: 60 FPS')
+        self.assertEqual(vm.bindings,list(range(14)))
+
     def test_native_graphics_dispatch_preserves_original_selection(self):
         for selected in range(10):
             data,report,vm=self.graphics_movie();vm.regs[7]=selected
@@ -230,13 +246,13 @@ class FrontendOverrides(unittest.TestCase):
                 self.assertEqual(pc,report['retail_resume'])
             else:
                 self.assertEqual(vm.rows[:2],['RESOLUTION: 1920 X 1080','FULLSCREEN: ON'])
-                self.assertEqual(len(vm.rows),8)
+                self.assertEqual(len(vm.rows),9)
                 self.assertEqual(vm.selected,0)
             self.assertEqual(vm.stack,[])
 
     def test_native_page_navigation_owns_selection_without_focus_manager(self):
         for page in range(4):
-            count=8
+            count=9 if page==0 else 8
             for key,step in [('UP',-1),('DOWN',1)]:
                 for selection in range(count):
                     data,report,vm=self.graphics_movie()
@@ -252,12 +268,12 @@ class FrontendOverrides(unittest.TestCase):
         for status in (0,1):
             data,report,vm=self.graphics_movie();vm.status=status
             vm.globals.update(_fnr3GraphicsActive=1,_fnr3GraphicsPage=0,_fnr3GraphicsStatus=0)
-            vm.selected=7;vm.regs[8]=vm.globals['INPUTCODE']['ADVANCE']
+            vm.selected=8;vm.regs[8]=vm.globals['INPUTCODE']['ADVANCE']
             vm.run(report['event_handler'],report['event_end'])
             self.assertIn(('host','PortGraphicsEvent',[3]),vm.calls)
-            self.assertEqual(vm.selected,7)
-            self.assertEqual(len(vm.rows),8)
-            self.assertEqual(vm.rows[7],'SAVE AND RESTART')
+            self.assertEqual(vm.selected,8)
+            self.assertEqual(len(vm.rows),9)
+            self.assertEqual(vm.rows[8],'SAVE AND RESTART')
             self.assertNotIn('BACK',vm.rows)
             self.assertTrue(any(name=='setHelp' and 't,BACK' in args[0] for _,name,args in vm.calls))
             self.assertEqual(vm.globals['_fnr3GraphicsActive'],1)
@@ -265,7 +281,7 @@ class FrontendOverrides(unittest.TestCase):
 
     def test_native_graphics_edit_save_back_and_read_only(self):
         for key,selection,commands in [('LEFT',0,[10]),('RIGHT',4,[24]),('ADVANCE',2,[22]),
-                ('ADVANCE',6,[2]),('ADVANCE',7,[3]),('CANCEL',3,[1]),('RIGHT',7,[])]:
+                ('ADVANCE',7,[2]),('ADVANCE',8,[3]),('CANCEL',3,[1]),('RIGHT',8,[])]:
             data,report,vm=self.graphics_movie();vm.globals['_fnr3GraphicsActive']=1
             vm.globals['_fnr3GraphicsStatus']=0;vm.selected=selection
             vm.regs[8]=vm.globals['INPUTCODE'][key]
@@ -277,7 +293,7 @@ class FrontendOverrides(unittest.TestCase):
                 self.assertIn(('class','mainInitGui',[]),vm.calls)
             if commands==[2]:self.assertIn('SAVED - RESTART REQUIRED',vm.rows)
             self.assertEqual(vm.stack,[])
-        data,report,vm=self.graphics_movie();vm.status=0;vm.selected=6
+        data,report,vm=self.graphics_movie();vm.status=0;vm.selected=7
         vm.globals['_fnr3GraphicsActive']=1;vm.regs[8]=vm.globals['INPUTCODE']['ADVANCE']
         vm.run(report['event_handler'],report['event_end'])
         self.assertIn('COULD NOT SAVE - TRY AGAIN',vm.rows)
@@ -285,7 +301,7 @@ class FrontendOverrides(unittest.TestCase):
     def test_native_mapping_family_labels_and_draft_navigation(self):
         for family, expected in [(1,'CONFIRM / PRIMARY: A'),(2,'CONFIRM / PRIMARY: CROSS'),(3,'CONFIRM / PRIMARY: B')]:
             data,report,vm=self.graphics_movie()
-            vm.family=family;vm.bindings=list(range(14));vm.selected=5
+            vm.family=family;vm.bindings=list(range(14));vm.selected=6
             vm.globals['_fnr3GraphicsActive']=1;vm.globals['_fnr3GraphicsStatus']=0
             vm.regs[8]=vm.globals['INPUTCODE']['ADVANCE']
             vm.run(report['event_handler'],report['event_end'])
@@ -301,7 +317,7 @@ class FrontendOverrides(unittest.TestCase):
             vm.regs[8]=vm.globals['INPUTCODE']['CANCEL']
             vm.run(report['event_handler'],report['event_end'])
             self.assertEqual(vm.globals['_fnr3GraphicsActive'],1)
-            self.assertEqual(vm.selected,5)
+            self.assertEqual(vm.selected,6)
             self.assertIn('BUTTON MAPPING',vm.rows)
 
     def test_native_mapping_all_commands_and_page_limits(self):
@@ -338,8 +354,8 @@ class FrontendOverrides(unittest.TestCase):
                 vm.run(report['event_handler'],report['event_end'])
                 sounds=[args for obj,name,args in vm.calls if name=='playSound']
                 self.assertEqual(sounds,[[expected]] if expected else [])
-        for key,selection,page,sound in [('ADVANCE',5,0,'confirm'),('ADVANCE',6,0,'confirm'),
-                ('ADVANCE',7,0,'confirm'),('CANCEL',0,0,'cancel'),('CANCEL',0,2,'cancel')]:
+        for key,selection,page,sound in [('ADVANCE',6,0,'confirm'),('ADVANCE',7,0,'confirm'),
+                ('ADVANCE',8,0,'confirm'),('CANCEL',0,0,'cancel'),('CANCEL',0,2,'cancel')]:
             data,report,vm=self.graphics_movie()
             vm.globals.update(_fnr3GraphicsActive=1,_fnr3GraphicsPage=page,_fnr3GraphicsStatus=0)
             vm.selected=selection;vm.regs[8]=vm.globals['INPUTCODE'][key]
@@ -398,7 +414,7 @@ class FrontendOverrides(unittest.TestCase):
         patched = m.patch_options(original)
         report = m.inspect_options_patch(patched)
         self.assertEqual(report['native_graphics_page'], True)
-        self.assertEqual(report['setting_rows'], 5)
+        self.assertEqual(report['setting_rows'], 6)
         self.assertEqual(report['read_only_rows'], ['MSAA: ORIGINAL', 'RESTART REQUIRED'])
         self.assertNotIn(b'PortGraphics\0', patched[len(original):])
         for name in m.GRAPHICS_CALLBACKS:
@@ -457,9 +473,13 @@ class FrontendOverrides(unittest.TestCase):
             self.assertEqual(len(manifest['preserved_siblings']), 9)
             for entry in manifest['preserved_siblings']:
                 self.assertEqual((ROOT / entry['source']).read_bytes(), (Path(directory) / entry['override']).read_bytes())
+            runtime_pins = dict(re.findall(r'"([^"\n]+)",0x[0-9a-f]+ull,0x([0-9a-f]+)ull', (ROOT/'src/port_frontend.h').read_text()))
             for entry in manifest['overrides']:
                 original = (ROOT / entry['source']).read_bytes()
                 patched = (Path(directory) / entry['override']).read_bytes()
+                fingerprint=14695981039346656037
+                for byte in patched:fingerprint=((fingerprint^byte)*1099511628211)&0xFFFFFFFFFFFFFFFF
+                self.assertEqual(fingerprint,int(runtime_pins[str(Path(entry['source']).relative_to('assets'))],16),entry['source'])
                 if entry['source'].endswith('.loc'):
                     self.assertEqual(entry['changed_entries'],['10','15','19'])
                     continue

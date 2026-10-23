@@ -14,7 +14,7 @@ namespace fnr3::port {
 struct FrontendFile {std::string_view relative;uint64_t source,override_hash;};
 inline constexpr std::array<FrontendFile,3> kFrontendFiles={{{
  "gui/fn2k6/screengroups/mainmenu/mainmenu.big",0xc6ad9ee8eabfe05eull,0x2f97ef8ecde6d538ull},{
- "gui/fn2k6/screengroups/options/options.big",0x5b8d5d26e63f2f92ull,0xdf84bab103992cb0ull},{
+ "gui/fn2k6/screengroups/options/options.big",0x5b8d5d26e63f2f92ull,0x89472a1b5ba58cffull},{
  "locale/ENGLISH.loc",0x89fcf882636eaf89ull,0x7c71267e53f94024ull}}};
 inline constexpr std::array<FrontendFile,9> kFrontendSiblings={{{
  "gui/fn2k6/screengroups/mainmenu/t3436t55.tmp",0x611dae6cfcfb0fecull,0x611dae6cfcfb0fecull},{

@@ -18,6 +18,11 @@ int main() {
   auto defaults = GraphicsFlags({});
   std::map<std::string, std::string> flags(defaults.begin(), defaults.end());
   assert(flags.at("window_width") == "1280");
+  assert(flags.contains("fnr3_native60_beta") && flags.at("fnr3_native60_beta")=="true");
+  GraphicsSettings thirty;thirty.frame_rate=30;auto f30=GraphicsFlags(thirty);
+  std::map<std::string,std::string> map30(f30.begin(),f30.end());
+  assert(map30.at("fnr3_native60_beta")=="false");
+  thirty.frame_rate=120;bool invalid_rate=false;try{(void)GraphicsFlags(thirty);}catch(const std::invalid_argument&){invalid_rate=true;}assert(invalid_rate);
   assert(flags.at("fullscreen") == "false");
   assert(flags.at("draw_resolution_scale_x") == "1");
   assert(flags.at("vulkan_allow_present_mode_immediate") == "false");

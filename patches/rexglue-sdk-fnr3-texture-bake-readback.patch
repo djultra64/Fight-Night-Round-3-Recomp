@@ -1,0 +1,75 @@
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -8,6 +8,12 @@
+  *
+  * @modified    Tom Clay, 2026 - Adapted for ReXGlue runtime
+  */
++
++#if defined(_WIN32)
++#include <windows.h>
++#else
++#include <dlfcn.h>
++#endif
+
+ #include <algorithm>
+ #include <array>
+@@ -46,6 +52,9 @@
+ #include <rex/ui/vulkan/presenter.h>
+ #include <rex/ui/vulkan/util.h>
+
++REXCVAR_DEFINE_UINT32(fnr3_texture_bake_readback_abi, 1, "Port/Capabilities",
++                      "Selective texture bake readback ABI");
++
+ // Legacy backend compatibility aliases for shared readback controls.
+ REXCVAR_DEFINE_BOOL(vulkan_readback_resolve, false, "GPU/Vulkan",
+                     "Read render-to-texture results on the CPU")
+@@ -72,6 +81,18 @@
+ namespace rex::graphics::vulkan {
+
+ namespace {
++
++bool FNR3ConsumeTextureBakeReadback(uint32_t address, uint32_t length) {
++  using Consume = bool (*)(uint32_t, uint32_t);
++  static const Consume consume = []() -> Consume {
++#if defined(_WIN32)
++    return reinterpret_cast<Consume>(GetProcAddress(GetModuleHandleW(nullptr), "Fnr3ConsumeTextureBakeReadback"));
++#else
++    return reinterpret_cast<Consume>(dlsym(RTLD_DEFAULT, "Fnr3ConsumeTextureBakeReadback"));
++#endif
++  }();
++  return consume && consume(address, length);
++}
+
+ // glslang default built-in resource limits.
+ constexpr TBuiltInResource kGlslangDefaultTBuiltInResource = {
+@@ -4390,13 +4411,6 @@
+     return false;
+   }
+
+-  ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
+-  if (readback_mode == ReadbackResolveMode::kDisabled) {
+-    uint32_t written_address, written_length;
+-    return render_target_cache_->Resolve(*memory_, *shared_memory_, *texture_cache_,
+-                                         written_address, written_length);
+-  }
+-
+   return IssueCopy_ReadbackResolvePath();
+ }
+
+@@ -4419,9 +4433,15 @@
+     return true;
+   }
+
+-  ReadbackResolveMode readback_mode = GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
++  const bool texture_bake = FNR3ConsumeTextureBakeReadback(written_address, written_length);
++  ReadbackResolveMode readback_mode = texture_bake
++      ? ReadbackResolveMode::kFull
++      : GetReadbackResolveMode(REXCVAR_GET(vulkan_readback_resolve));
+   if (readback_mode == ReadbackResolveMode::kDisabled) {
+     return true;
++  }
++  if (texture_bake) {
++    REXGPU_INFO("FNR3: selective texture bake readback {:08X}, {} bytes", written_address, written_length);
+   }
+
+   auto ensure_readback_slot = [&](ReadbackBuffer& readback, uint32_t index, uint32_t size) -> bool {

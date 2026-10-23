@@ -19,6 +19,7 @@ set(FNR3_SOURCES
     src/port_input.cpp
     src/port_frame_times.cpp
     src/port_timing.cpp
+    src/port_appearance.cpp
 )
 # Transform only private generated copies; original codegen output is immutable.
 # On the first clean build, build fnr3_codegen then reconfigure (port_build.py
@@ -78,7 +79,8 @@ endif()
 
 rexglue_setup_target(fnr3 GPU_PLUGINS xenos)
 if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-    target_link_options(fnr3 PRIVATE "-Wl,--export-dynamic-symbol=Fnr3GetInputGlyphBridge")
+    target_link_options(fnr3 PRIVATE "-Wl,--export-dynamic-symbol=Fnr3GetInputGlyphBridge"
+        "-Wl,--export-dynamic-symbol=Fnr3ConsumeTextureBakeReadback")
 endif()
 
 # The 0.10.0 installed SDK stages runtime libraries on Windows/macOS only.

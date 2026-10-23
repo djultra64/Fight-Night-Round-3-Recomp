@@ -16,19 +16,19 @@ class NativeGraphicsSession {
  void RequireActive()const{if(!active_)throw std::logic_error("Native graphics page is inactive");}
 public:
  bool Active()const{return active_;}
- static int Count(int field){constexpr int counts[]={6,2,3,6,4};if(field<0||field>=5)throw std::invalid_argument("Invalid native graphics field");return counts[field];}
+ static int Count(int field){constexpr int counts[]={6,2,3,6,4,2};if(field<0||field>=6)throw std::invalid_argument("Invalid native graphics field");return counts[field];}
  void Begin(const PortSettings& initial){(void)SerializePortSettings(initial);pending_=initial;active_=true;}
  void Cancel(){active_=false;}
  int Get(int field)const{
   RequireActive();(void)Count(field);
   switch(field){case 0:return Index(resolutions_,pending_.graphics.resolution);case 1:return pending_.graphics.fullscreen?1:0;
-   case 2:return Index(effects_,pending_.graphics.post_effect);case 3:return Index(filters_,pending_.graphics.texture_filter);default:return Index(families_,pending_.input_family);}
+   case 2:return Index(effects_,pending_.graphics.post_effect);case 3:return Index(filters_,pending_.graphics.texture_filter);case 4:return Index(families_,pending_.input_family);default:return pending_.graphics.frame_rate==60?1:0;}
  }
  void Step(int field,int direction){
   RequireActive();if(direction!=-1&&direction!=1)throw std::invalid_argument("Invalid native graphics direction");
   const auto n=Count(field);const auto index=(Get(field)+direction+n)%n;
   switch(field){case 0:pending_.graphics.resolution=resolutions_[index];break;case 1:pending_.graphics.fullscreen=index!=0;break;
-   case 2:pending_.graphics.post_effect=effects_[index];break;case 3:pending_.graphics.texture_filter=filters_[index];break;case 4:pending_.input_family=families_[index];break;}
+   case 2:pending_.graphics.post_effect=effects_[index];break;case 3:pending_.graphics.texture_filter=filters_[index];break;case 4:pending_.input_family=families_[index];break;case 5:pending_.graphics.frame_rate=index?60:30;break;}
  }
  int GetBinding(int action)const{RequireActive();if(action<0||action>=int(kActionCount))throw std::invalid_argument("Invalid native action");return int(pending_.bindings.physical[action]);}
  void StepBinding(int action,int direction){RequireActive();if(direction!=-1&&direction!=1)throw std::invalid_argument("Invalid native binding direction");auto next=(GetBinding(action)+direction+int(kActionCount))%int(kActionCount);pending_.bindings.Bind(InputAction(action),PhysicalButton(next));}

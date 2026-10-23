@@ -43,6 +43,7 @@ PATCHES = (
     'tools/port-input/rexglue-sdl-observer-abi.patch',
     'tools/port-input/rexglue-native-glyph-diagnostics.patch',
     'tools/port-input/rexglue-native-glyph-bc2.patch',
+    'rexglue-sdk-fnr3-texture-bake-readback.patch',
 )
 TARGETS = {'Linux': 'linux-amd64', 'Windows': 'win-amd64'}
 MSVC_REDISTRIBUTABLES = frozenset({
