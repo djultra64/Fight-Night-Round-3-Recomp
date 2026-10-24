@@ -1,5 +1,10 @@
 # Changelog
 
+## Unreleased
+
+- Fixed OPTIONS reopening as an empty TITLE TEXT screen after leaving and re-entering the menu.
+- Save the active profile when a custom boxer is confirmed in CREATE CHAMP, including edits to an existing boxer. Wait for storage completion and offer Retry or Continue Without Saving if storage is cancelled or fails.
+
 ## 1.0.2
 
 - Fixed saved custom boxer hair colors in selection and combat, including scaled rendering up to 2160p.

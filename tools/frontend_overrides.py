@@ -14,10 +14,12 @@ import struct
 
 MAIN_MENU = 'assets/gui/fn2k6/screengroups/mainmenu/mainmenu.big'
 OPTIONS = 'assets/gui/fn2k6/screengroups/options/options.big'
+CAC = 'assets/gui/fn2k6/screengroups/cac/cac.big'
 LOCALIZATION = 'assets/locale/ENGLISH.loc'
 SOURCE_HASHES = {
     MAIN_MENU: '3f565109eab0c108663d085f645624c160cb1c6ac5c9669600c2774eb40bfdaa',
     OPTIONS: '9688e765412b9d9727a8aabe392cd20eb6e05fada42379b927907c0c767975b4',
+    CAC: '595cad8a13a02528ff9a738fb3447ae07d77937e132a9d725c863a31668bd3a6',
     LOCALIZATION: '2142ed127ebabc0fc991009e26fe044a7e9ece9f03b4ebd61d7dd4e78e20a981',
 }
 SIBLING_HASHES = {
@@ -525,7 +527,7 @@ def graphics_event_handler(script, register_table):
     def key_is(name):
         key(); script.global_path('INPUTCODE', name); script.emit(0x66)
     def selected(): script.call(MENU_PATH, 'getSelectedIndex', discard=False)
-    def refresh(): script.call((), '_fnr3GraphicsRefresh')
+    def refresh(): script.call(('options',), '_fnr3GraphicsRefresh')
     for name in ('CANCEL', 'CIRCLE', 'BACK'):
         key_is(name); script.jump(0x9d, 'back')
     key_is('ADVANCE'); script.jump(0x9d, 'advance')
@@ -656,11 +658,14 @@ def patch_options(data: bytes) -> bytes:
     handler.label('begin_ok'); handler.set_global('_fnr3GraphicsActive', 1)
     handler.set_global('_fnr3GraphicsSelection', 0); handler.set_global('_fnr3GraphicsStatus', 0)
     handler.set_global('_fnr3GraphicsPage', 0)
-    handler.call((), '_fnr3GraphicsRefresh'); handler.emit(0x76, 0x3e)
+    handler.call(('options',), '_fnr3GraphicsRefresh'); handler.emit(0x76, 0x3e)
     handler.label('normal'); push_selected(); handler.emit(0x51); handler.word_action(0x87, 7); handler.emit(0x17)
     handler_code = handler.resolved(); inserts.append((handler_position, handler_code))
     definitions = script_at(definitions_position)
-    definitions.emit(0x71); definitions.string('_fnr3GraphicsRefresh')
+    # A root-global closure pins this movie after onExitGroup deletes options.
+    # Its consumed init-action tag then prevents the class from being rebuilt
+    # on re-entry. Give the helper the original Options class lifetime instead.
+    definitions.global_path('options'); definitions.string('_fnr3GraphicsRefresh')
     definitions.emit(0x9b); definitions.data.extend(bytes((-definitions.address-len(definitions.data)) % 4))
     header = len(definitions.data)
     definitions.data.extend(struct.pack('>IIIIII', 0x1587c, 0, 0x15a04, 0, 0x98765432, 0x12345678))
@@ -719,6 +724,263 @@ def inspect_options_patch(data: bytes) -> dict:
             'all_branch_targets_valid': valid, 'decoded_actions': len(actions)}
 
 
+PROFILE_SAVE_CALLBACKS = ('PortSaveEditedProfile', 'PortGetEditedSaveStatus')
+CAC_SAVE_MARKER = b'FNR3_PORT_CAC_SAVE_V1\0'
+CAC_SAVE_HELPERS = ('_fnr3BeginRequiredSave', '_fnr3RequiredSaveSucceeded',
+    '_fnr3RequiredSaveFailed', '_fnr3ContinueWithoutSaving', '_fnr3FinishRequiredSave',
+    '_fnr3RestoreRequiredSave', '_fnr3BeginBoxerEdit')
+
+
+def movie_init_action_pointer(data: bytes, constants: bytes, sprite: int) -> int:
+    """Locate an original init-action tag through the movie's root frames."""
+    constant_strings(constants)
+    root = u32(constants, 20)
+    if u32(data, root) != 9 or u32(data, root + 4) != 0x09876543:
+        raise ValueError('unexpected APT movie root')
+    count, frames = u32(data, root + 16), u32(data, root + 20)
+    if frames > len(data) or count > (len(data) - frames) // 8:
+        raise ValueError('APT root frame list outside file')
+    matches = []
+    for frame in range(frames, frames + count * 8, 8):
+        items, pointers = u32(data, frame), u32(data, frame + 4)
+        if pointers > len(data) or items > (len(data) - pointers) // 4:
+            raise ValueError('APT frame item list outside file')
+        for entry in range(pointers, pointers + items * 4, 4):
+            item = u32(data, entry)
+            if u32(data, item) == 8 and u32(data, item + 4) == sprite:
+                matches.append(item + 8)
+    if len(matches) != 1:
+        raise ValueError('expected one CAC class init action')
+    return matches[0]
+
+
+def cac_save_strings():
+    return sorted(set(CAC_SAVE_HELPERS) | set(PROFILE_SAVE_CALLBACKS) | {
+        '', 'cac', 'AptTaskMessages', '_root', 'carSuccessCB', 'carFailureCB',
+        '_fnr3RequiredSaveState', '_fnr3RequiredSaveAllowed', '_fnr3RequiredSaveAutosave',
+        'gNetPopupAllowed', 'gNetPopupInAutosave', 'dummyEventHandler', 'gEH',
+        'setLocalEventHandler', 'CFePlayerManagerApt', 'PopupOpened', 'PopupClosed',
+        'gPflPopup', 'close', 'gStdPopup', 'show', 'fnr3RequiredProfile', 'w',
+        'Could not save your profile. Your boxer changes are still in memory.',
+        'RETRY', 'CONTINUE WITHOUT SAVING', 'm_screen', 'm_filmStrip', 'animateOut',
+        'CFeCreateBoxerApt', 'SetCacMode', 'UpdateTBlends', 'gSM', 'goBackScreen'})
+
+
+def cac_save_function(script: NativeScript, name: str):
+    """No injected constant-index arrays: each helper belongs to the CAC class."""
+    def ret(): script.emit(0x76, 0x3e)
+    def state(): script.global_path('cac', '_fnr3RequiredSaveState')
+    def set_state(value):
+        script.global_path('cac'); script.string('_fnr3RequiredSaveState')
+        script.integer(value); script.emit(0x4f)
+    def call(method): script.call(('cac',), method)
+    def clear_callbacks():
+        for callback in ('carSuccessCB', 'carFailureCB'):
+            script.variable('_root'); script.string(callback); script.emit(0x76, 0x4f)
+    def guard(expected=None):
+        script.global_path('cac'); script.emit(0x12); script.jump(0x9d, 'stale')
+        if expected is not None:
+            state(); script.integer(expected); script.emit(0x66, 0x12)
+            script.jump(0x9d, 'return')
+    def ending(terminal=False):
+        script.label('return'); ret()
+        script.label('stale')
+        if terminal: clear_callbacks()
+        ret()
+    def restore_flag(global_name, saved_name):
+        script.emit(0x71); script.string(global_name)
+        script.global_path('cac', saved_name); script.emit(0x4f)
+
+    if name == '_fnr3BeginRequiredSave':
+        guard()
+        for value in (1, 3):
+            state(); script.integer(value); script.emit(0x66); script.jump(0x9d, 'return')
+        # Preserve flags for every attempt. Failure restores them before Retry.
+        for saved, original in (('_fnr3RequiredSaveAllowed', 'gNetPopupAllowed'),
+                                ('_fnr3RequiredSaveAutosave', 'gNetPopupInAutosave')):
+            script.global_path('cac'); script.string(saved)
+            script.global_path(original); script.emit(0x4f)
+        set_state(1)
+        script.set_global('gNetPopupAllowed', 0); script.set_global('gNetPopupInAutosave', 1)
+        script.variable('_root'); script.string('dummyEventHandler'); script.emit(0x4e)
+        script.call(('gEH',), 'setLocalEventHandler', 1)
+        script.call(('CFePlayerManagerApt',), 'PopupOpened')
+        for field, helper in (('carSuccessCB', '_fnr3RequiredSaveSucceeded'),
+                              ('carFailureCB', '_fnr3RequiredSaveFailed')):
+            script.variable('_root'); script.string(field)
+            script.global_path('cac', helper); script.emit(0x4f)
+        # The original autosave operand order is failure, success, count2.
+        script.global_path('cac', '_fnr3RequiredSaveFailed')
+        script.global_path('cac', '_fnr3RequiredSaveSucceeded')
+        script.host('PortSaveEditedProfile', 2, discard=False)
+        script.jump(0x9d, 'return')
+        call('_fnr3RequiredSaveFailed')
+        ending()
+    elif name == '_fnr3RequiredSaveSucceeded':
+        guard(1)
+        # Original native writer has one active request. A late callback from
+        # an earlier edit must not interrupt a new request still in flight.
+        script.host('PortGetEditedSaveStatus', discard=False)
+        script.integer(1); script.emit(0x66); script.jump(0x9d, 'return')
+        script.host('PortGetEditedSaveStatus', discard=False)
+        script.integer(2); script.emit(0x66); script.jump(0x9d, 'saved')
+        call('_fnr3RequiredSaveFailed'); script.jump(0x99, 'return')
+        script.label('saved'); call('_fnr3FinishRequiredSave')
+        ending(terminal=True)
+    elif name == '_fnr3RequiredSaveFailed':
+        guard(1)
+        script.host('PortGetEditedSaveStatus', discard=False)
+        script.integer(1); script.emit(0x66); script.jump(0x9d, 'return')
+        set_state(2); call('_fnr3RestoreRequiredSave')
+        # Original gStdPopup.show protocol: id,type,title,body,count,selected,
+        # label0,callback0,arg0,label1,callback1,arg1. Retry is selection zero.
+        script.integer(1); script.global_path('cac', '_fnr3ContinueWithoutSaving')
+        script.string('CONTINUE WITHOUT SAVING')
+        script.integer(0); script.global_path('cac', '_fnr3BeginRequiredSave'); script.string('RETRY')
+        script.integer(0); script.integer(2)
+        script.string('Could not save your profile. Your boxer changes are still in memory.')
+        script.string(''); script.string('w'); script.string('fnr3RequiredProfile')
+        script.call(('gStdPopup',), 'show', 12)
+        ending(terminal=True)
+    elif name == '_fnr3ContinueWithoutSaving':
+        guard(2)
+        # A premature callback must never permit unloading an active writer.
+        script.host('PortGetEditedSaveStatus', discard=False)
+        script.integer(1); script.emit(0x66); script.jump(0x9d, 'return')
+        call('_fnr3FinishRequiredSave'); ending()
+    elif name == '_fnr3FinishRequiredSave':
+        guard()
+        state(); script.integer(3); script.emit(0x66); script.jump(0x9d, 'return')
+        set_state(3); call('_fnr3RestoreRequiredSave')
+        script.call(('CFePlayerManagerApt',), 'PopupClosed')
+        # Same success operations as retail cac.fxnSave, after verified storage
+        # success or the explicit Continue Without Saving choice only.
+        script.call(('cac', 'm_screen', 'm_filmStrip'), 'animateOut')
+        script.integer(255); script.call(('CFeCreateBoxerApt',), 'SetCacMode', 1)
+        script.call(('CFeCreateBoxerApt',), 'UpdateTBlends')
+        script.call(('gSM',), 'goBackScreen'); ending()
+    elif name == '_fnr3RestoreRequiredSave':
+        guard()
+        restore_flag('gNetPopupAllowed', '_fnr3RequiredSaveAllowed')
+        restore_flag('gNetPopupInAutosave', '_fnr3RequiredSaveAutosave')
+        clear_callbacks(); script.call(('gPflPopup',), 'close'); ending()
+    elif name == '_fnr3BeginBoxerEdit':
+        # CACMAIN and the editor can share the same class. Retain completion
+        # protection until the user's next original New/Edit entry, then arm
+        # the next save without allowing a pending writer to be overwritten.
+        guard(3)
+        script.host('PortGetEditedSaveStatus', discard=False)
+        script.integer(1); script.emit(0x66); script.jump(0x9d, 'return')
+        set_state(0); ending()
+    else:
+        raise ValueError('unknown required-save helper')
+
+
+def patch_cac(data: bytes, constants: bytes) -> bytes:
+    start, end = 0xffb4, 0x12e0f
+    root_pointer = movie_init_action_pointer(data, constants, 156)
+    if u32(data, root_pointer) != start:
+        raise ValueError('unexpected CAC class action pointer')
+    actions = decode_actions(data, start, end)
+    boundaries = {a.offset for a in actions} | {end}
+    if any(a.target not in boundaries for a in actions if a.target is not None):
+        raise ValueError('original CAC branch target is not an instruction')
+    output = bytearray(data); strings = {}
+    for value in cac_save_strings():
+        output.extend(bytes((-len(output)) % 4)); strings[value] = len(output)
+        output.extend(value.encode('ascii') + b'\0')
+    output.extend(bytes((-len(output)) % 4))
+    clone_start = len(output); delta = clone_start - start; inserts = []
+    def script_at(position):
+        return NativeScript(position + delta + sum(len(c) for _, c in inserts), strings)
+    guard = script_at(0x110d8)
+    guard.global_path('cac', '_fnr3RequiredSaveState'); guard.emit(0x12)
+    guard.jump(0x9d, 'original'); guard.emit(0x76, 0x3e); guard.label('original')
+    inserts.append((0x110d8, guard.resolved()))
+    success = script_at(0x11114)
+    success.call(('cac',), '_fnr3BeginRequiredSave'); success.emit(0x76, 0x3e)
+    inserts.append((0x11114, success.finish()))
+    for entry in (0x11b16, 0x11b52):
+        fresh = script_at(entry); fresh.call(('cac',), '_fnr3BeginBoxerEdit')
+        inserts.append((entry, fresh.finish()))
+    definitions = script_at(0x12e0e)
+    definitions_start = definitions.address
+    for name in CAC_SAVE_HELPERS:
+        definitions.global_path('cac'); definitions.string(name)
+        definitions.emit(0x9b)
+        definitions.data.extend(bytes((-definitions.address-len(definitions.data)) % 4))
+        header = len(definitions.data)
+        definitions.data.extend(struct.pack('>IIIIII', strings[''], 0, 0, 0, 0x98765432, 0x12345678))
+        body = NativeScript(definitions.address + len(definitions.data), strings)
+        cac_save_function(body, name); code = body.resolved()
+        definitions.data.extend(code)
+        struct.pack_into('>I', definitions.data, header + 12, len(code))
+        definitions.emit(0x4f)
+    inserts.append((0x12e0e, definitions.finish()))
+    def relocated(address):
+        return address + delta + sum(len(c) for p, c in inserts if p <= address)
+    clone = bytearray(); cursor = start
+    for where, code in inserts:
+        clone.extend(data[cursor:where]); clone.extend(code); cursor = where
+    clone.extend(data[cursor:end])
+    for action in actions:
+        if action.immediate is not None:
+            field = relocated(action.immediate) - clone_start
+            struct.pack_into('>i', clone, field, relocated(action.target) - (clone_start + field + 4))
+        if action.size_field is not None:
+            extra = sum(len(c) for p, c in inserts if action.body <= p < action.end)
+            struct.pack_into('>I', clone, relocated(action.size_field) - clone_start,
+                u32(data, action.size_field) + extra)
+    output.extend(clone); struct.pack_into('>I', output, root_pointer, clone_start)
+    output.extend(CAC_SAVE_MARKER + struct.pack('>III', clone_start, len(clone), definitions_start))
+    patched = bytes(output); inspect_cac_patch(patched, constants); return patched
+
+
+def inspect_cac_patch(data: bytes, constants: bytes) -> dict:
+    location = data.rfind(CAC_SAVE_MARKER)
+    if location < 0 or location + len(CAC_SAVE_MARKER) + 12 != len(data):
+        raise ValueError('missing required boxer profile-save metadata')
+    start, size, definitions = struct.unpack_from('>III', data, location + len(CAC_SAVE_MARKER))
+    pointer = movie_init_action_pointer(data, constants, 156)
+    if start + size != location or u32(data, pointer) != start or not start < definitions < location:
+        raise ValueError('invalid CAC class action block')
+    actions = decode_actions(data, start, start + size)
+    if not actions or actions[-1].opcode != 0 or actions[-1].end != start + size:
+        raise ValueError('CAC clone must finish with native END before metadata')
+    boundaries = {a.offset for a in actions} | {start + size}
+    if any(a.target not in boundaries for a in actions if a.target is not None):
+        raise ValueError('patched CAC branch target is not an instruction')
+    field = align4(start + 1); pool = u32(data, field + 4)
+    strings = constant_strings(constants)
+    methods = {}
+    for index, action in enumerate(actions[:-1]):
+        if actions[index + 1].opcode not in (0x8e, 0x9b): continue
+        if action.opcode == 0xa2:
+            name = strings[u32(data, pool + data[action.offset + 1] * 4)]
+        elif action.opcode == 0xa1:
+            name = cstring(data, u32(data, align4(action.offset + 1)))
+        else: continue
+        function = actions[index + 1]; methods[name] = (function.body, function.end)
+    if not all(name in methods for name in CAC_SAVE_HELPERS):
+        raise ValueError('missing CAC required-save helpers')
+    fresh_entries = []
+    for index, action in enumerate(actions):
+        if action.opcode != 0xa1 or cstring(data, u32(data, align4(action.offset + 1))) != '_fnr3BeginBoxerEdit':
+            continue
+        if actions[index + 1].opcode == 0x52:
+            fresh_entries.append((actions[index - 8].offset, actions[index + 2].end))
+    if len(fresh_entries) != 2:
+        raise ValueError('missing original CAC New/Edit save-state reset')
+    return {'script_start': start, 'script_end': start + size, 'definitions_start': definitions,
+        'save_body': methods['fxnSave'][0], 'save_end': methods['fxnSave'][1],
+        'discard_body': methods['fxnExit'][0], 'discard_end': methods['fxnExit'][1],
+        'cancel_body': methods['PopupCanceled'][0], 'cancel_end': methods['PopupCanceled'][1],
+        'fresh_new_body': fresh_entries[0][0], 'fresh_new_end': fresh_entries[0][1],
+        'fresh_edit_body': fresh_entries[1][0], 'fresh_edit_end': fresh_entries[1][1],
+        'required_save_helpers': {name: methods[name] for name in CAC_SAVE_HELPERS},
+        'all_branch_targets_valid': True}
+
+
 def sha256(data: bytes) -> str:
     return hashlib.sha256(data).hexdigest()
 
@@ -758,20 +1020,24 @@ def generate(root: Path, destination: Path, game_data_root: Path | None = None) 
                 282: ('SELECTCORNER,RIVALSSELECTRIVALRY,~DNA~,GAMEMODES,CACMAIN,OPTIONSMAIN',
                       'SELECTCORNER,RIVALSSELECTRIVALRY,~DNA~,GAMEMODES,CACMAIN,OPTIONSMAIN,QUIT'),
             }), 'mainmenu.apt': patch_main_menu(entries['mainmenu.apt'])}
-        else:
+        elif name == OPTIONS:
             replacements = {'options.apt': patch_options(entries['options.apt'])}
+        else:
+            replacements = {'cac.apt': patch_cac(entries['cac.apt'], entries['cac.const'])}
         # Native fixup mutates constant-index arrays even in function bodies
         # that have not executed. Check startup-loader semantics before output.
-        stem = 'mainmenu' if name == MAIN_MENU else 'options'
+        stem = 'mainmenu' if name == MAIN_MENU else 'options' if name == OPTIONS else 'cac'
         apt = replacements[stem + '.apt']
-        marker = b'FNR3_PORT_MAIN_MENU_V1\0' if name == MAIN_MENU else b'FNR3_PORT_OPTIONS_V1\0'
+        marker = (b'FNR3_PORT_MAIN_MENU_V1\0' if name == MAIN_MENU else
+                  b'FNR3_PORT_OPTIONS_V1\0' if name == OPTIONS else CAC_SAVE_MARKER)
         metadata = apt.rfind(marker) + len(marker)
         script_start, script_size = struct.unpack_from('>II', apt, metadata)
         validate_constant_fixups(apt, replacements.get(stem + '.const', entries[stem + '.const']), script_start, script_start + script_size)
         patched = replace_big(data, replacements)
         outputs.append((name, patched, sorted(replacements)))
     manifest = {'schema_version': 1, 'author': 'djultra64',
-                'required_host_callbacks': ['AptTaskMessages.Quit'] + ['AptTaskMessages.' + name for name in GRAPHICS_CALLBACKS],
+                'required_host_callbacks': ['AptTaskMessages.Quit'] + [
+                    'AptTaskMessages.' + name for name in (*GRAPHICS_CALLBACKS, *PROFILE_SAVE_CALLBACKS)],
                 'overrides': [], 'preserved_siblings': []}
     for name, data, changed in outputs:
         target = destination / name

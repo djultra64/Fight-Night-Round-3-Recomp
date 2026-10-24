@@ -33,7 +33,6 @@ class NativeVM:
             'gStdHelp': 'help', 'gHlpPopup': 'helpPopup', 'gFM': 'focus',
             'INPUTCODE': {k: i for i, k in enumerate(('ADVANCE', 'CANCEL', 'CIRCLE', 'BACK', 'LEFT', 'RIGHT', 'UP', 'DOWN'))}}
         self.regs = {7: 0, 8: 0}
-        self.functions = {}
         self.retail_rows = None
         self.native_title,self.native_handler=None,None
         self.signed_in,self.game_mode=False,0
@@ -64,8 +63,8 @@ class NativeVM:
             if name == 'addElement': self.rows.append(args[0])
             if name == 'getSelectedIndex': return self.selected
             if name == 'setSelectedIndex': self.selected = args[0]
-        if obj is self.globals and name in self.functions:
-            self.run(*self.functions[name])
+        if isinstance(obj, dict) and isinstance(obj.get(name), tuple):
+            self.run(*obj[name])
         return None
 
     def run(self, start, end, stop=None):
@@ -88,7 +87,6 @@ class NativeVM:
                 key,obj=stack.pop(),stack.pop();stack.append(obj.get(key) if isinstance(obj,dict) else obj[key])
             elif op == 0x4f:
                 value,key,obj=stack.pop(),stack.pop(),stack.pop();obj[key]=value
-                if isinstance(value,tuple): self.functions[key]=value
             elif op == 0x42:
                 count=stack.pop();stack.append([stack.pop() for _ in range(count)])
             elif op == 0x47:
@@ -217,8 +215,26 @@ class FrontendOverrides(unittest.TestCase):
         entries={e.name:e.payload for e in m.parse_big((ROOT/m.OPTIONS).read_bytes())}
         data=m.patch_options(entries['options.apt']); report=m.inspect_options_patch(data)
         vm=NativeVM(data,entries['options.const'])
-        vm.functions['_fnr3GraphicsRefresh']=(report['refresh_body'], report['refresh_end'])
+        # Execute the actual generated definition; prebinding a global fake
+        # hid a movie-retaining closure that survived the retail class unload.
+        actions=m.decode_actions(data,m.u32(data,0x3ca4),report['script_end'])
+        function=next(a for a in reversed(actions) if a.opcode==0x9b)
+        definition=next(a.offset for a in reversed(actions)
+                        if a.offset<function.offset and a.opcode==0x71)
+        vm.run(definition,report['script_end'])
         return data,report,vm
+
+    def test_graphics_helper_unloads_with_its_options_class(self):
+        data,report,vm=self.graphics_movie()
+        helper='_fnr3GraphicsRefresh'
+        self.assertNotIn(helper,vm.globals,
+            'a global function retains the unloaded movie with consumed init actions')
+        self.assertEqual(vm.globals['options'][helper],
+                         (report['refresh_body'],report['refresh_end']))
+        # The original onExitGroup deletes options. All added function roots
+        # must disappear with it so a fresh movie can initialize its class.
+        del vm.globals['options']
+        self.assertFalse(any(isinstance(v,tuple) for v in vm.globals.values()))
 
     def test_frame_rate_row_changes_only_30_60_and_preserves_mapping(self):
         data,report,vm=self.graphics_movie()
@@ -462,14 +478,14 @@ class FrontendOverrides(unittest.TestCase):
             (data / 'gui').symlink_to(ROOT / 'assets/gui', target_is_directory=True)
             (data / 'locale').symlink_to(ROOT / 'assets/locale', target_is_directory=True)
             manifest = m.generate(base / 'unrelated workspace', base / 'overrides', data)
-            self.assertEqual(len(manifest['overrides']), 3)
+            self.assertEqual(len(manifest['overrides']), 4)
             self.assertTrue((base / 'overrides/manifest.json').is_file())
 
     def test_retail_outputs_and_manifest(self):
         with tempfile.TemporaryDirectory() as directory:
             manifest = m.generate(ROOT, Path(directory))
             self.assertEqual(manifest['schema_version'], 1)
-            self.assertEqual(len(manifest['overrides']), 3)
+            self.assertEqual(len(manifest['overrides']), 4)
             self.assertEqual(len(manifest['preserved_siblings']), 9)
             for entry in manifest['preserved_siblings']:
                 self.assertEqual((ROOT / entry['source']).read_bytes(), (Path(directory) / entry['override']).read_bytes())

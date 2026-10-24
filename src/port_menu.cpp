@@ -2,6 +2,7 @@
 #include "port_menu.h"
 #include "port_apt.h"
 #include "port_native_graphics.h"
+#include "port_profile_save.h"
 #include "port_settings_runtime.h"
 #include <mutex>
 #include <atomic>
@@ -76,8 +77,20 @@ void NativeActiveFamily(PPCContext& ctx,uint8_t* base){
   if(result==0){const auto f=DetectedInputFamily();result=f==InputFamily::PlayStation?2:f==InputFamily::Switch?3:1;}}
  MakeAptIntegerResult(ctx,base,result,value_api);
 }
+void NativeSaveEditedProfile(PPCContext& ctx,uint8_t* base){
+ int result=0;
+ try{result=StartRequiredProfileSave(ctx,base)?1:0;}
+ catch(const std::exception& e){REXLOG_ERROR("FNR3: required profile save failed: {}",e.what());}
+ MakeAptIntegerResult(ctx,base,result,value_api);
+}
+void NativeEditedSaveStatus(PPCContext& ctx,uint8_t* base){
+ int result=0;
+ try{if(ctx.r4.u32==0)result=static_cast<int>(ReadRequiredProfileSaveStatus(ctx,base));}
+ catch(const std::exception& e){REXLOG_ERROR("FNR3: required profile status failed: {}",e.what());}
+ MakeAptIntegerResult(ctx,base,result,value_api);
+}
 struct NativeMethod {const char* name;PPCFunc* function;uint32_t thunk=0,address=0;};
-std::array<NativeMethod,9> methods={{{"PortGraphicsEvent",NativeEvent},{"PortGetResolution",NativeGet<0>},{"PortGetFullscreen",NativeGet<1>},{"PortGetFxaa",NativeGet<2>},{"PortGetFiltering",NativeGet<3>},{"PortGetFamily",NativeGet<4>},{"PortGetFrameRate",NativeGet<5>},{"PortGetBinding",NativeBinding},{"PortGetActiveFamily",NativeActiveFamily}}};
+std::array<NativeMethod,11> methods={{{"PortGraphicsEvent",NativeEvent},{"PortGetResolution",NativeGet<0>},{"PortGetFullscreen",NativeGet<1>},{"PortGetFxaa",NativeGet<2>},{"PortGetFiltering",NativeGet<3>},{"PortGetFamily",NativeGet<4>},{"PortGetFrameRate",NativeGet<5>},{"PortGetBinding",NativeBinding},{"PortGetActiveFamily",NativeActiveFamily},{"PortSaveEditedProfile",NativeSaveEditedProfile},{"PortGetEditedSaveStatus",NativeEditedSaveStatus}}};
 }
 void InitializePortMenus(rex::Runtime& runtime,std::shared_ptr<MenuQueue> queue,const std::filesystem::path& path){
  if(!queue)throw std::runtime_error("Missing UI menu queue");
@@ -94,6 +107,7 @@ void InitializePortMenus(rex::Runtime& runtime,std::shared_ptr<MenuQueue> queue,
   std::memcpy(runtime.virtual_membase()+method.address,method.name,std::strlen(method.name)+1);
  }
  {std::lock_guard lock(settings_mutex);settings_path=path;settings_session.Cancel();}
+ ResetRequiredProfileSave();
  registered.store(false);dispatch.store(std::move(queue));
 }
 void ShutdownPortMenus(){if(auto q=dispatch.exchange(nullptr))q->Shutdown();}

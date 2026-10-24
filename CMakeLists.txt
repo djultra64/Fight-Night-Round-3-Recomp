@@ -16,6 +16,7 @@ set(FNR3_SOURCES
     src/port_graphics.cpp
     src/port_frontend.cpp
     src/port_menu.cpp
+    src/port_profile_save.cpp
     src/port_input.cpp
     src/port_frame_times.cpp
     src/port_timing.cpp
