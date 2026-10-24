@@ -28,7 +28,7 @@ jobs:
         shell: bash
         run: |
           set -eu
-          for name in port_timing_policy port_graphics_contract port_native_graphics_contract port_input_contract port_settings_contract port_menu_queue_contract port_appearance_contract; do
+          for name in port_timing_policy port_graphics_contract port_native_graphics_contract port_input_contract port_settings_contract port_menu_queue_contract port_appearance_contract port_readback_range_contract; do
             g++ -std=c++23 -O2 -DNDEBUG -pthread -Isrc "tests/${name}.cpp" -o "/tmp/${name}"
             "/tmp/${name}"
           done

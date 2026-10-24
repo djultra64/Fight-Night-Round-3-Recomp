@@ -44,6 +44,7 @@ PATCHES = (
     'tools/port-input/rexglue-native-glyph-diagnostics.patch',
     'tools/port-input/rexglue-native-glyph-bc2.patch',
     'rexglue-sdk-fnr3-texture-bake-readback.patch',
+    'rexglue-sdk-vulkan-readback-source-range.patch',
 )
 TARGETS = {'Linux': 'linux-amd64', 'Windows': 'win-amd64'}
 MSVC_REDISTRIBUTABLES = frozenset({
@@ -130,7 +131,8 @@ def prepare(target):
     patch_hashes = {name: sha(patch_file(name)) for name in PATCHES}
     seed = {'sdk_commit': PIN, 'patches': patch_hashes,
             'patch_application': 'explicit-directory-v1',
-            'pipeline_cache_file': sha(ROOT / 'tools/xenos-optimized/pipeline_cache_file.h')}
+            'pipeline_cache_file': sha(ROOT / 'tools/xenos-optimized/pipeline_cache_file.h'),
+            'readback_buffer_range': sha(ROOT / 'tools/xenos-optimized/readback_buffer_range.h')}
     marker = home / 'sdk-prepared.json'
     if sdk.exists():
         if not marker.is_file() or json.loads(marker.read_text()) != seed:
@@ -178,6 +180,8 @@ def prepare(target):
         apply_sdk_patches(temporary)
         shutil.copy2(ROOT / 'tools/xenos-optimized/pipeline_cache_file.h',
                      temporary / 'include/rex/graphics/vulkan/pipeline_cache_file.h')
+        shutil.copy2(ROOT / 'tools/xenos-optimized/readback_buffer_range.h',
+                     temporary / 'include/rex/graphics/vulkan/fnr3_readback_buffer_range.h')
         # Hash all source inputs before compilation (including submodules).
         write_json(home / 'sdk-inputs.json', {'submodules': submodules,
                    'files': files_manifest(temporary, source=True)})

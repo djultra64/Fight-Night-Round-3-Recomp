@@ -1,0 +1,49 @@
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -34,6 +34,7 @@
+ #include <rex/graphics/pipeline/shader/spirv_translator.h>
+ #include <rex/graphics/registers.h>
+ #include <rex/graphics/vulkan/command_processor.h>
++#include <rex/graphics/vulkan/fnr3_readback_buffer_range.h>
+ #include <rex/graphics/vulkan/pipeline_cache.h>
+ #include <rex/graphics/vulkan/render_target_cache.h>
+ #include <rex/graphics/vulkan/shader.h>
+@@ -4515,7 +4516,17 @@
+     }
+
+     VkBuffer scaled_resolve_buffer = texture_cache_->scaled_resolve_buffer();
+-    if (scaled_resolve_buffer == VK_NULL_HANDLE || scaled_start > uint64_t(UINT32_MAX)) {
++    if (scaled_resolve_buffer == VK_NULL_HANDLE) {
++      return true;
++    }
++    // GetScaledResolveRange has already validated this slice. Bind just that
++    // slice: the complete 3x backing buffer exceeds maxStorageBufferRange, and
++    // a buffer-relative shader offset may exceed 32 bits for high guest pages.
++    const auto source_range = fnr3::port::ReadbackSourceBinding(
++        scaled_start, scaled_length, vulkan_device->properties().minStorageBufferOffsetAlignment,
++        scaled_start + scaled_length, vulkan_device->properties().maxStorageBufferRange);
++    if (!source_range) {
++      REXGPU_ERROR("Scaled resolve readback exceeds the device storage-buffer range");
+       return true;
+     }
+
+@@ -4561,8 +4572,8 @@
+
+     VkDescriptorBufferInfo buffer_infos[2] = {};
+     buffer_infos[0].buffer = scaled_resolve_buffer;
+-    buffer_infos[0].offset = 0;
+-    buffer_infos[0].range = VK_WHOLE_SIZE;
++    buffer_infos[0].offset = source_range->offset;
++    buffer_infos[0].range = source_range->length;
+     buffer_infos[1].buffer = resolve_downscale_buffer_;
+     buffer_infos[1].offset = 0;
+     buffer_infos[1].range = written_length;
+@@ -4601,7 +4612,7 @@
+     constants.scale_y = texture_cache_->draw_resolution_scale_y();
+     constants.pixel_size_log2 = pixel_size_log2;
+     constants.tile_count = tile_count;
+-    constants.source_offset_bytes = uint32_t(scaled_start);
++    constants.source_offset_bytes = source_range->shader_offset;
+     constants.half_pixel_offset = (REXCVAR_GET(readback_resolve_half_pixel_offset) &&
+                                    (constants.scale_x > 1 || constants.scale_y > 1))
+                                       ? 1u
