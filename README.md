@@ -1,8 +1,8 @@
 # Fight Night Round 3 Recomp
 
-**Version 1.0.1 · Project work by [djultra64](https://github.com/djultra64)**
+**Version 1.0.2 · Project work by [djultra64](https://github.com/djultra64)**
 
-Version 1.0.1 fixes a diagnosed gameplay crash caused by missing indirect guest callbacks. See the [1.0.1 release notes](docs/beta/release-notes-1.0.1.md).
+Version 1.0.2 fixes saved custom boxer hair colors and adds a native 30/60 FPS selector. See the [1.0.2 release notes](docs/beta/release-notes-1.0.2.md).
 
 An unofficial PC recompilation of Fight Night Round 3 for Xbox 360, built with ReXGlue and the Xenos renderer: Vulkan on Linux and Windows. Version 1.0 brings native 60 FPS gameplay while preserving the original gameplay speed, with configurable resolution and a native settings interface.
 
@@ -10,19 +10,19 @@ You must supply your own supported USA game data. No disc images, XEX executable
 
 ## Release status
 
-Version 1.0.1 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
+Version 1.0.2 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
 
 Read the [known issues](docs/beta/known-issues.md) before installing. Downloads are available through [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases).
 
-## Development updates
+## New in 1.0.2
 
-The current source branch adds **FRAME RATE: 30 FPS / 60 FPS** to **OPTIONS → GRAPHICS**, with 60 FPS as the default. Use **SAVE AND RESTART** to apply a change; **SAVE** keeps the current session's timing until the next launch. Intros retain their original cadence, and the 60 FPS mode preserves replay slow motion.
+This release adds **FRAME RATE: 30 FPS / 60 FPS** to **OPTIONS → GRAPHICS**, with 60 FPS as the default. Use **SAVE AND RESTART** to apply a change; **SAVE** keeps the current session's timing until the next launch. Intros retain their original cadence, and the 60 FPS mode preserves replay slow motion.
 
-Custom boxer hair-color baking now requests GPU readback only for the textures consumed by the original CPU compressor. Saved color values are preserved without enabling full-scene readback during combat. These source updates are not included in the existing 1.0.1 downloads.
+Custom boxer hair-color baking now requests GPU readback only for the textures consumed by the original CPU compressor. Saved color values are preserved without enabling full-scene readback during combat. The fix also handles scaled rendering through 2160p.
 
 ## Features
 
-- Native **OPTIONS → GRAPHICS** page with resolution, fullscreen, FXAA and texture filtering.
+- Native **OPTIONS → GRAPHICS** page with resolution, fullscreen, FXAA, texture filtering and 30/60 FPS selection.
 - A single resolution selector: 720p, 900p, 1080p, 1440p, 1800p and 2160p. The default is 720p.
 - Native 60 FPS gameplay with original gameplay speed, stock-rate 30 FPS intros, and 60 FPS replays with elapsed-time updates that preserve slow motion.
 - Vulkan presentation and persistent shader/pipeline caching, with parallel compilation and prewarming of cached complete pipelines to reduce repeat compilation stalls.
@@ -32,13 +32,13 @@ Custom boxer hair-color baking now requests GPU readback only for the textures c
 
 Rendering uses integer scales and downsamples intermediate resolutions: 900p and 1080p use the same 2× rendering tier as 1440p. A lower output resolution within that tier may not reduce GPU cost. Original MSAA is shown as read-only.
 
-Gameplay advances at the native 60 FPS cadence with phase-specific timing; intros retain their stock 30 FPS cadence. Crowd animation uses fractional advancement, and replays use elapsed time to preserve their slow-motion behavior.
+Gameplay advances at the selected 30 or 60 FPS cadence with phase-specific timing; intros retain their stock 30 FPS cadence. Crowd animation uses fractional advancement, and replays use elapsed time to preserve their slow-motion behavior.
 
 A steady 60 FPS requires enough CPU/GPU headroom. Cached pipeline prewarming reduces repeat compilation work, but previously unseen content can still trigger compilation and frame-time spikes.
 
 ## Get started
 
-[Download version 1.0.1](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.1): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
+[Download version 1.0.2](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.2): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
 
 Linux:
 
@@ -81,6 +81,7 @@ PRs and forks improving frame pacing, performance or correct higher frame rates 
 - [Controls and controller prompts](docs/beta/controls.md)
 - [Known issues](docs/beta/known-issues.md)
 - [Troubleshooting](docs/beta/troubleshooting.md)
+- [Version 1.0.2 release notes](docs/beta/release-notes-1.0.2.md)
 - [Version 1.0.1 release notes](docs/beta/release-notes-1.0.1.md)
 - [Version 1.0 release notes](docs/beta/release-notes-1.0.md)
 - [Historical beta 0.7 release notes](docs/beta/release-notes-0.7.md)

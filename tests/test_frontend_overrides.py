@@ -479,7 +479,7 @@ class FrontendOverrides(unittest.TestCase):
                 patched = (Path(directory) / entry['override']).read_bytes()
                 fingerprint=14695981039346656037
                 for byte in patched:fingerprint=((fingerprint^byte)*1099511628211)&0xFFFFFFFFFFFFFFFF
-                self.assertEqual(fingerprint,int(runtime_pins[str(Path(entry['source']).relative_to('assets'))],16),entry['source'])
+                self.assertEqual(fingerprint,int(runtime_pins[Path(entry['source']).relative_to('assets').as_posix()],16),entry['source'])
                 if entry['source'].endswith('.loc'):
                     self.assertEqual(entry['changed_entries'],['10','15','19'])
                     continue

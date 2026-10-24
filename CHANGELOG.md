@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.2
+
+- Fixed saved custom boxer hair colors in selection and combat, including scaled rendering up to 2160p.
+- Limited hair texture readback to the original bake destinations and bounded scaled Vulkan source descriptors.
+- Added native GRAPHICS frame-rate selection: 30 FPS or 60 FPS, applied with SAVE AND RESTART.
+
+See the [1.0.2 release notes](docs/beta/release-notes-1.0.2.md).
+
 ## 1.0.1
 
 - Fixed a diagnosed gameplay crash caused by missing indirect guest callback wrappers.

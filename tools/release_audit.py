@@ -27,7 +27,7 @@ def audit(root):
             errors.append(str(relative) + ': private/generated directory')
         if path.suffix.lower() in FORBIDDEN_EXTENSIONS:
             errors.append(str(relative) + ': original/private binary content')
-        if relative.parts[0] == 'generated' and str(relative) != 'generated/rexglue.cmake':
+        if relative.parts[0] == 'generated' and relative.as_posix() != 'generated/rexglue.cmake':
             errors.append(str(relative) + ': generated guest content')
         raw = path.read_bytes()
         try:

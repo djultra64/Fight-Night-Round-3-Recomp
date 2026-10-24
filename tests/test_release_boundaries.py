@@ -82,6 +82,18 @@ class ReleaseBoundaries(unittest.TestCase):
                 self.assertFalse(release.portable_component(name))
         self.assertTrue(release.portable_component('Fight-Night-Round-3-v1.0'))
 
+    def test_source_audit_accepts_only_public_codegen_scaffold(self):
+        spec = importlib.util.spec_from_file_location('release_audit', Path(__file__).resolve().parents[1] / 'tools/release_audit.py')
+        audit = importlib.util.module_from_spec(spec)
+        spec.loader.exec_module(audit)
+        source = self.root / 'public-source'
+        (source / 'generated').mkdir(parents=True)
+        (source / 'generated/rexglue.cmake').write_text('# public build scaffold')
+        self.assertEqual(audit.audit(source), 1)
+        (source / 'generated/default.cpp').write_text('private guest code')
+        with self.assertRaisesRegex(ValueError, 'generated guest content'):
+            audit.audit(source)
+
     def test_source_audit_rejects_private_directories_and_shader_artifacts(self):
         spec = importlib.util.spec_from_file_location('release_audit', Path(__file__).resolve().parents[1] / 'tools/release_audit.py')
         audit = importlib.util.module_from_spec(spec)

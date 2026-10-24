@@ -16,7 +16,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCT = 'Fight Night Round 3 Recomp'
-VERSION = '1.0.1'
+VERSION = '1.0.2'
 EXTRACT_XISO_PIN = '3f5b62cfe68f000b0e3c8a30104973f3a297948e'
 PIN = 'f5337cdc947ff6d4c4196737e2c807a48f2a1fc2'
 PATCHES = (
@@ -476,7 +476,7 @@ def package_port(target, output, dry_run=False):
         'owner', 'target', 'sdk', 'sdk_inputs_sha256', 'configuration', 'clock',
         'artifacts', 'runtime_redistributables') if key in record}
     public_record.update({'product': PRODUCT, 'version': VERSION, 'channel': 'release',
-                          'backend': record.get('backend', 'Vulkan'), 'simulation_hz': 60,
+                          'backend': record.get('backend', 'Vulkan'), 'default_simulation_hz': 60, 'simulation_hz_options': [30, 60],
                           'loader_dependencies': record.get('loader_dependencies', {})})
     write_json(output / 'build-record.json', public_record)
     licenses = output / 'licenses'
@@ -534,9 +534,9 @@ def package_port(target, output, dry_run=False):
             'Install the Vulkan loader and a working Vulkan 1.3 GPU driver.\n'
             'Desktop display/audio/input services are provided by your Linux system.\n')
     (output / 'README.txt').write_text(
-        PRODUCT + ' v1.0.1\nProject work: djultra64\n'
+        PRODUCT + ' v' + VERSION + '\nProject work: djultra64\n'
         'ReXGlue and dependencies retain their respective authors and licenses.\n'
-        'Native 60 Hz gameplay with original game speed and slow motion. ' + public_record['backend'] + ' renderer.\n'
+        'Selectable 30/60 FPS gameplay with original game speed and slow motion. ' + public_record['backend'] + ' renderer.\n'
         'Original game assets are not included. Supply your verified supported USA game data.\n'
         'Requires Python 3.12+ and an x86-64-v2 CPU.\n'
         + platform_help +
@@ -544,11 +544,13 @@ def package_port(target, output, dry_run=False):
         'Existing extracted data: ' + launch_command + ' --game-data-root <absolute path>.\n'
         'Use --prepare-only to generate private overrides without opening the game.\n'
         'The supplied prep scripts verify original asset pins; derived assets remain private.\n'
+        'OPTIONS > GRAPHICS > FRAME RATE: choose 30 FPS or 60 FPS (default).\n'
+        'Use SAVE AND RESTART to apply a frame-rate change.\n'
         'Keep saves/settings and shader caches outside this package.\n'
         'The runtime, Xenos GPU plugin, SDL3 and ISO extractor are bundled.\n'
         'Build and package hashes are recorded.\n', encoding='utf-8')
     for name in ('LICENSE', 'THIRD_PARTY_NOTICES.md',
-                 'docs/beta/release-notes-1.0.1.md', 'docs/beta/installation.md'):
+                 'docs/beta/release-notes-' + VERSION + '.md', 'docs/beta/installation.md'):
         destination = output / name
         destination.parent.mkdir(parents=True, exist_ok=True)
         shutil.copy2(ROOT / name, destination)
@@ -590,7 +592,7 @@ def main():
         if args.action == 'build':
             build_extractor(target, args.flatpak, args.extractor_compiler)
     else:
-        output = args.output or ROOT / 'dist' / ('fight-night-round-3-recomp-v1.0.1-' + target)
+        output = args.output or ROOT / 'dist' / ('fight-night-round-3-recomp-v' + VERSION + '-' + target)
         package_port(target, output.resolve(), args.dry_run)
 
 
