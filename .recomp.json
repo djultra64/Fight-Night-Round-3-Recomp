@@ -1,0 +1,25 @@
+{
+  "$schema": "https://recomp.fyi/schema/v1.json",
+  "game": "Fight Night Round 3",
+  "system": "Xbox 360",
+  "type": "recomp",
+  "original": {
+    "region": "USA"
+  },
+  "project": "Fight Night Round 3 Recomp",
+  "status": "released",
+  "targets": ["Windows", "Linux"],
+  "toolchain": "Rexglue",
+  "approach": "Static PowerPC recompilation with ReXGlue and the Xenos Vulkan renderer.",
+  "maintainers": [
+    {
+      "name": "djultra64",
+      "link": "https://github.com/djultra64"
+    }
+  ],
+  "help": [
+    "Frame pacing and performance",
+    "Correct higher frame rates with synchronized audio"
+  ],
+  "notes": "Native 60 FPS gameplay at original speed, stock-rate intros and replay timing that preserves slow motion. Configurable resolution up to 4K and native graphics settings. Automatic Xbox, PlayStation and Nintendo Switch prompts, manual family selection and optional action remapping. Intermittent loading, audio and text issues remain; complete game compatibility is not guaranteed."
+}
