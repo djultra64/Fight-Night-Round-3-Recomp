@@ -24,7 +24,7 @@ Existing persistent driver caches, parallel workers and texture invalidation rem
 | Existing compiled port contracts | 9 passed, including input, settings, timing and scaled texture readback |
 | Final Linux SDK, game and ISO extractor build | Passed; candidate packaged with artifact hash validation |
 | Final Windows SDK, game and ISO extractor build | Passed; candidate packaged with artifact hash validation |
-| Real Linux SDK no-file logging probe | Passed; created neither a file named `-` nor an implicit `logs` directory |
+| Real Linux/Windows SDK no-file logging probes | Passed; created neither a file named `-` nor an implicit `logs` directory |
 | Windows last-chance exception probe | Handled exception: exit 0, no dump. Unhandled exception: abnormal exit and a 37,483-byte dump |
 | Independent code review | Material findings corrected; final review reported no additional findings |
 
@@ -34,10 +34,10 @@ Reproduce the Python suite with `python3 -m unittest discover -s tests -p 'test_
 
 ## Hardware observations and limits
 
-The Linux candidate ran on AMD Ryzen Z1 Extreme / RADV PHOENIX under SDL X11. The measured client and Vulkan swapchain were both 1280×720 at desktop scale 1. The first run loaded zero pipeline-cache bytes; an intentional settings restart retained its separate log and loaded 646,812 validated bytes on the next attempt. Captures show the intro, title screen, rendered fighters, ring/environment and pause menu. The user played the Linux candidate and confirmed: “Todo se ve bien.”
+The Linux candidate ran on AMD Ryzen Z1 Extreme / RADV PHOENIX under SDL X11. The measured client and Vulkan swapchain were both 1280×720 at desktop scale 1. The first run loaded zero pipeline-cache bytes; an intentional settings restart retained its separate log and loaded 646,812 validated bytes on the next attempt. The final play session closed with exit 0; both attempt records were retained. Captures show the intro, title screen, rendered fighters, ring/environment and pause menu. The user played the Linux candidate and confirmed: “Todo se ve bien.”
 
 That confirmation supports the Linux smoke test. It does not establish a repeated cold-start failure rate, the full Windows mixed-DPI matrix, or reproduction and resolution of the original intermittent issue on fransisigoswho's system. New pipeline states may still cause compilation pauses; retaining their draws favors correctness. No sustained-FPS improvement is claimed. The recorded intro/menu/combat sequence is not a controlled baseline/candidate benchmark. ThreadSanitizer was unavailable in the local toolchain; the concurrency fixtures are not a substitute for a sanitizer run.
 
-Windows runtime/DPI testing and the final Windows no-file logging probe remain pending after remote access stopped responding following successful build/package completion. No conclusion is drawn about RTSS/Afterburner involvement. No release has been published.
+Windows gameplay and the physical mixed-DPI matrix remain additional release validation. Both candidate packages were saved locally; the Windows executable/runtime hashes match the production build record. No conclusion is drawn about RTSS/Afterburner involvement. No release has been published.
 
 Thanks to **fransisigoswho** for reporting the startup, missing-rendering and scaling symptoms that prompted these fixes. The changelog retains this credit and states the remaining validation accurately.

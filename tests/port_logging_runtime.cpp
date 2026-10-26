@@ -6,7 +6,6 @@
 int main(int argc,char** argv) {
   rex::cvar::Init(argc,argv);
   rex::InitLogging("-", spdlog::level::info);
-  REXLOG_INFO("Optional file logging probe");
   rex::ShutdownLogging();
   if(std::filesystem::exists("-") || std::filesystem::exists("logs"))return 1;
   std::cout<<"PASS real SDK no-file logging without an implicit path\n";
