@@ -21,6 +21,7 @@ jobs:
         run: |
           python -m unittest discover -s tests -p test_port_installer.py
           python -m unittest discover -s tests -p test_port_build.py
+          python -m unittest discover -s tests -p test_launch_diagnostics.py
           python -m unittest discover -s tests -p test_windows_crt.py
           python -m unittest discover -s tests -p test_native60_transform.py
           python -m unittest discover -s tests -p test_release_boundaries.py

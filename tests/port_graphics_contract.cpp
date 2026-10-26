@@ -18,6 +18,7 @@ int main() {
   auto defaults = GraphicsFlags({});
   std::map<std::string, std::string> flags(defaults.begin(), defaults.end());
   assert(flags.at("window_width") == "1280");
+  assert(flags.contains("window_size_in_pixels") && flags.at("window_size_in_pixels") == "true");
   assert(flags.contains("fnr3_native60_beta") && flags.at("fnr3_native60_beta")=="true");
   GraphicsSettings thirty;thirty.frame_rate=30;auto f30=GraphicsFlags(thirty);
   std::map<std::string,std::string> map30(f30.begin(),f30.end());

@@ -37,6 +37,10 @@ void ApplyGraphicsSettings() {
   for (const auto &[name, value] : flags)
     if (!rex::cvar::SetFlagByName(name, value))
       throw std::runtime_error("Rejected port graphics setting: " + name);
+  REXLOG_INFO("FNR3: physical window {}x{}, internal scale {}x{}, complete draws {}, blocking preload {}",
+              rex::cvar::GetFlagByName("window_width"), rex::cvar::GetFlagByName("window_height"),
+              rex::cvar::GetFlagByName("draw_resolution_scale_x"), rex::cvar::GetFlagByName("draw_resolution_scale_y"),
+              rex::cvar::GetFlagByName("vulkan_complete_draws"), rex::cvar::GetFlagByName("shader_preload_blocking"));
   const FlagList keyboard_defaults={{"keybind_a","Space"},{"keybind_b","Backspace"},
     {"keybind_start","Return"},{"keybind_dpad_up","Up"},{"keybind_dpad_down","Down"},
     {"keybind_dpad_left","Left"},{"keybind_dpad_right","Right"}};

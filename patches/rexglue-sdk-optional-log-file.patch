@@ -1,0 +1,20 @@
+--- a/src/core/logging.cpp
++++ b/src/core/logging.cpp
+@@ -37,7 +37,7 @@
+                       "Global log level: trace, debug, info, warn, error, critical, off")
+     .allowed({"trace", "debug", "info", "warn", "error", "critical", "off"});
+ 
+-REXCVAR_DEFINE_STRING(log_file, "", "Log", "Log file path (empty = auto sequential naming)");
++REXCVAR_DEFINE_STRING(log_file, "", "Log", "Log file path (empty = auto sequential naming, - = no file sink)");
+ 
+ REXCVAR_DEFINE_BOOL(log_verbose, false, "Log", "Enable verbose logging (sets level to trace)")
+     .debug_only();
+@@ -219,7 +219,7 @@
+   // File sink (rotating) with sequential naming fallback
+   std::string resolved_path;
+   if (config.log_file) {
+-    resolved_path = config.log_file;
++    if (std::string_view(config.log_file) != "-") resolved_path = config.log_file;
+   } else if (!config.app_name.empty()) {
+     auto log_dir = config.log_dir.empty() ? std::filesystem::current_path() / "logs"
+                                           : std::filesystem::path(config.log_dir);

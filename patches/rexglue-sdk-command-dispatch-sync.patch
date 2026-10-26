@@ -1,0 +1,76 @@
+--- a/src/graphics/command_processor.cpp
++++ b/src/graphics/command_processor.cpp
+@@ -160,11 +160,31 @@
+                                                uint32_t title_id, bool blocking) {}
+ 
+ void CommandProcessor::CallInThread(std::function<void()> fn) {
+-  if (pending_fns_.empty() && system::XThread::IsInThread(worker_thread_.get())) {
++  bool run_inline;
++  {
++    std::lock_guard<std::mutex> lock(pending_fns_mutex_);
++    run_inline = pending_fns_.empty() && system::XThread::IsInThread(worker_thread_.get());
++    if (!run_inline) {
++      pending_fns_.push(std::move(fn));
++      pending_fns_available_.store(true, std::memory_order_release);
++    }
++  }
++  if (run_inline) fn();
++  else write_ptr_index_event_->Set();
++}
++
++void CommandProcessor::RunPendingFunctions() {
++  while (true) {
++    std::function<void()> fn;
++    {
++      std::lock_guard<std::mutex> lock(pending_fns_mutex_);
++      if (pending_fns_.empty()) return;
++      fn = std::move(pending_fns_.front());
++      pending_fns_.pop();
++      pending_fns_available_.store(!pending_fns_.empty(), std::memory_order_release);
++    }
++    // A callback can queue more callbacks; never execute under the queue lock.
+     fn();
+-  } else {
+-    pending_fns_.push(std::move(fn));
+-    write_ptr_index_event_->Set();
+   }
+ }
+ 
+@@ -207,11 +227,7 @@
+   }
+ 
+   while (worker_running_) {
+-    while (!pending_fns_.empty()) {
+-      auto fn = std::move(pending_fns_.front());
+-      pending_fns_.pop();
+-      fn();
+-    }
++    RunPendingFunctions();
+ 
+     uint32_t write_ptr_index = write_ptr_index_.load();
+     if (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index) {
+@@ -232,10 +248,10 @@
+         rex::thread::MaybeYield();
+         loop_count++;
+         write_ptr_index = write_ptr_index_.load();
+-      } while (worker_running_ && pending_fns_.empty() &&
++      } while (worker_running_ && !pending_fns_available_.load(std::memory_order_acquire) &&
+                (write_ptr_index == 0xBAADF00D || read_ptr_index_ == write_ptr_index));
+       ReturnFromWait();
+-      if (!worker_running_ || !pending_fns_.empty()) {
++      if (!worker_running_ || pending_fns_available_.load(std::memory_order_acquire)) {
+         continue;
+       }
+     }
+--- a/include/rex/graphics/command_processor.h
++++ b/include/rex/graphics/command_processor.h
+@@ -238,6 +238,9 @@
+   std::atomic<bool> worker_running_;
+   system::object_ref<system::XHostThread> worker_thread_;
+ 
++  void RunPendingFunctions();
++  std::mutex pending_fns_mutex_;
++  std::atomic<bool> pending_fns_available_{false};
+   std::queue<std::function<void()>> pending_fns_;
+ 
+   // MicroEngine binary from PM4_ME_INIT

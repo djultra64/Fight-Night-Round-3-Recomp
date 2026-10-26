@@ -4,6 +4,7 @@
 
 #pragma once
 
+#include "port_crash_diagnostics.h"
 #include "port_graphics.h"
 #include "port_frontend.h"
 #include "port_input.h"
@@ -38,7 +39,23 @@ public:
   }
 
   // Override virtual hooks for customization:
-  // void OnPostInitLogging() override {}
+  void OnPostInitLogging() override {
+    REXLOG_INFO("FNR3: startup diagnostics; build 1.0.2 + stability candidate, work djultra64");
+#if defined(_WIN32)
+    // The launcher passes a distinct directory for every diagnostic attempt.
+    if (const wchar_t* directory = _wgetenv(L"FNR3_DIAGNOSTICS_DIR")) {
+      std::string error;
+      try {
+        if (!fnr3::port::InstallCrashDiagnostics(directory, &error))
+          REXLOG_WARN("FNR3: crash diagnostics unavailable: {}", error);
+        else
+          REXLOG_INFO("FNR3: Windows unhandled-crash diagnostics enabled");
+      } catch (const std::exception& e) {
+        REXLOG_WARN("FNR3: crash diagnostics unavailable: {}", e.what());
+      }
+    }
+#endif
+  }
   void OnPreSetup(rex::RuntimeConfig &config) override {
     if (config.gpu_plugin.empty()) {
       config.gpu_plugin = "xenos";

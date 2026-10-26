@@ -13,6 +13,7 @@ include(generated/rexglue.cmake)
 # Sources
 set(FNR3_SOURCES
     src/main.cpp
+    src/port_crash_diagnostics.cpp
     src/port_graphics.cpp
     src/port_frontend.cpp
     src/port_menu.cpp

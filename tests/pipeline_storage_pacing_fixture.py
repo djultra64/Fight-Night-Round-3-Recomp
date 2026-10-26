@@ -49,6 +49,8 @@ PREFIX = r'''
 #include <vector>
 using namespace std::chrono_literals;
 #define assert_not_null(x) assert(x)
+#define REXCVAR_GET(x) false
+#define REXGPU_INFO(...) ((void)0)
 namespace rex::thread { template<class T> void Wait(T*, bool) {} }
 namespace memory { void copy_and_swap(uint32_t*, const uint32_t*, uint32_t) {} }
 struct Shader { uint64_t ucode_data_hash() const { return 0; }
@@ -77,6 +79,10 @@ struct VulkanPipelineCache {
  std::thread::id saver;
  void SaveDriverCache() { std::unique_lock lock(save_lock); saver = std::this_thread::get_id();
   save_entered = true; save_cond.notify_all(); save_cond.wait(lock, [&]{ return !hold_save; }); ++saves; }
+ std::atomic<uint64_t> pipeline_wait_count_{0},pipeline_wait_microseconds_{0};
+ uint64_t pipeline_wait_reported_count_=0;
+ std::chrono::steady_clock::time_point pipeline_wait_last_report_{};
+ void DrainPipelineCreation() {}
  void CreateQueuedPipelinesOnProcessorThread() {}
  void ProcessDeferredPipelineDestructions(bool) {}
  void EndSubmission(); void StorageWriteThread();

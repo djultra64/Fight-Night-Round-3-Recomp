@@ -45,6 +45,10 @@ PATCHES = (
     'tools/port-input/rexglue-native-glyph-bc2.patch',
     'rexglue-sdk-fnr3-texture-bake-readback.patch',
     'rexglue-sdk-vulkan-readback-source-range.patch',
+    'rexglue-sdk-window-physical-size.patch',
+    'rexglue-sdk-vulkan-complete-draws.patch',
+    'rexglue-sdk-command-dispatch-sync.patch',
+    'rexglue-sdk-optional-log-file.patch',
 )
 TARGETS = {'Linux': 'linux-amd64', 'Windows': 'win-amd64'}
 MSVC_REDISTRIBUTABLES = frozenset({
@@ -82,7 +86,8 @@ def files_manifest(directory, source=False):
 def run(command, flatpak=False, cwd=None):
     command = list(map(str, command))
     if flatpak:
-        command = ['flatpak', 'run', '--user', '--filesystem=' + str(ROOT),
+        asset_access = ['--filesystem=' + str((ROOT / 'assets').resolve()) + ':ro'] if (ROOT / 'assets').is_symlink() else []
+        command = ['flatpak', 'run', '--user', '--filesystem=' + str(ROOT), *asset_access,
                    '--command=env', 'org.freedesktop.Sdk//25.08',
                    'PATH=/usr/lib/sdk/llvm20/bin:/usr/bin:/bin', *command]
     print(subprocess.list2cmdline(command), flush=True)

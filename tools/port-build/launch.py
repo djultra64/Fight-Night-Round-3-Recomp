@@ -1,6 +1,7 @@
 #!/usr/bin/env python3
 """Prepare a private game-data installation and launch the port. Work: djultra64."""
 import argparse
+from datetime import datetime, timezone
 import hashlib
 import importlib.util
 import json
@@ -9,6 +10,9 @@ from pathlib import Path
 import platform
 import subprocess
 import sys
+import time
+import tempfile
+import uuid
 
 PORT_RESTART_EXIT_CODE = 42
 
@@ -62,6 +66,47 @@ def prepare(package, data, user, regenerate=False):
     return frontend, glyphs
 
 
+def utc_now():
+    return datetime.now(timezone.utc).isoformat(timespec='milliseconds')
+
+
+def save_attempt(directory, record):
+    if directory is None:
+        return
+    try:
+        temporary = directory / 'attempt.json.tmp'
+        temporary.write_text(json.dumps(record, indent=2) + '\n', encoding='utf-8')
+        temporary.replace(directory / 'attempt.json')
+    except OSError as error:
+        print(f'Could not save launch diagnostics: {error}', file=sys.stderr)
+
+
+def attempt_paths(user, session, attempt):
+    directory = user / 'logs' / session / f'attempt-{attempt:02d}'
+    try:
+        directory.mkdir(parents=True, exist_ok=False)
+        log_file = directory / 'runtime.log'
+        # The runtime opens its sink without recovering from permission errors.
+        # Verify a writable file before passing it to the child.
+        with log_file.open('x', encoding='utf-8'):
+            pass
+        return directory, log_file
+    except OSError as error:
+        print(f'Could not create launch diagnostics: {error}', file=sys.stderr)
+    try:
+        directory = Path(tempfile.mkdtemp(prefix=f'fnr3-{session}-{attempt:02d}-'))
+        log_file = directory / 'runtime.log'
+        with log_file.open('x', encoding='utf-8'):
+            pass
+        print(f'Launch diagnostics saved in temporary directory: {directory}', file=sys.stderr)
+        return directory, log_file
+    except OSError as error:
+        # The SDK's explicit no-file destination also suppresses implicit
+        # logging beside the executable, which may be equally unwritable.
+        print(f'File diagnostics unavailable; continuing without them: {error}', file=sys.stderr)
+        return None, Path('-')
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--game-data-root', type=Path)
@@ -70,6 +115,8 @@ def main():
     parser.add_argument('--cache-root', type=Path)
     parser.add_argument('--prepare-only', action='store_true')
     parser.add_argument('--regenerate-assets', action='store_true')
+    parser.add_argument('--diagnostics', action='store_true',
+                        help='Record startup details and enable Windows crash dumps for this run')
     args, extra = parser.parse_known_args()
     package = Path(__file__).resolve().parent
     default_user, default_cache = user_paths()
@@ -99,13 +146,38 @@ def main():
                 '--fnr3_frontend_root', '--fnr3_glyph_root', '--log_file')
     if any(arg.split('=', 1)[0] in reserved for arg in extra):
         parser.error('Use launcher path arguments instead of duplicate game path flags')
-    log_flags = [] if any(arg.split('=', 1)[0] == '--log_level' for arg in extra) else ['--log_level=error']
-    command = [str(executable), '--game_data_root=' + str(data),
-               '--user_data_root=' + str(user), '--cache_root=' + str(cache),
-               '--fnr3_frontend_root=' + str(frontend), '--fnr3_glyph_root=' + str(glyphs),
-               '--log_file=' + str(user / 'runtime.log'), *log_flags, *extra]
+    default_level = 'info' if args.diagnostics else 'error'
+    log_flags = [] if any(arg.split('=', 1)[0] == '--log_level' for arg in extra) else ['--log_level=' + default_level]
+    base_command = [str(executable), '--game_data_root=' + str(data),
+                    '--user_data_root=' + str(user), '--cache_root=' + str(cache),
+                    '--fnr3_frontend_root=' + str(frontend), '--fnr3_glyph_root=' + str(glyphs)]
+    session = datetime.now(timezone.utc).strftime('%Y%m%dT%H%M%S') + '-' + uuid.uuid4().hex[:12]
+    attempt = 0
     while True:
-        result = subprocess.run(command, cwd=package).returncode
+        attempt += 1
+        directory, log_file = attempt_paths(user, session, attempt)
+        command = [*base_command, '--log_file=' + str(log_file), *log_flags, *extra]
+        environment = os.environ.copy()
+        environment.pop('FNR3_DIAGNOSTICS_DIR', None)
+        if args.diagnostics and directory is not None:
+            environment['FNR3_DIAGNOSTICS_DIR'] = str(directory)
+        record = {'schema': 1, 'session': session, 'attempt': attempt,
+                  'started_utc': utc_now(), 'status': 'launching',
+                  'launcher_pid': os.getpid(), 'platform': f'{platform.system()} {platform.release()} {platform.machine()}',
+                  'executable': str(executable), 'runtime_log': str(log_file),
+                  'diagnostics': args.diagnostics}
+        save_attempt(directory, record)
+        started = time.monotonic()
+        try:
+            result = subprocess.run(command, cwd=package, env=environment).returncode
+        except OSError as error:
+            record.update(status='launch_failed', error=str(error), finished_utc=utc_now())
+            save_attempt(directory, record)
+            raise
+        record.update(returncode=result, finished_utc=utc_now(),
+                      elapsed_ms=round((time.monotonic() - started) * 1000),
+                      status='restart_requested' if result == PORT_RESTART_EXIT_CODE else 'finished')
+        save_attempt(directory, record)
         if result != PORT_RESTART_EXIT_CODE:
             return result
 

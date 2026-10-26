@@ -233,7 +233,7 @@ class PackageTests(unittest.TestCase):
                 else:
                     self.assertEqual(logging_flags, ['--log_level=error'])
 
-    def test_launcher_reserved_restart_reuses_command_and_propagates_result(self):
+    def test_launcher_reserved_restart_preserves_options_and_propagates_result(self):
         spec = importlib.util.spec_from_file_location('port_launcher_restart', Path(pb.__file__).parent / 'port-build/launch.py')
         launcher = importlib.util.module_from_spec(spec)
         spec.loader.exec_module(launcher)
@@ -249,7 +249,8 @@ class PackageTests(unittest.TestCase):
                 prepare.assert_called_once()
                 first = run.call_args_list[0]
                 for call in run.call_args_list:
-                    self.assertEqual(call.args, first.args)
+                    stable = lambda c: [a for a in c.args[0] if not a.startswith("--log_file=")]
+                    self.assertEqual(stable(call), stable(first))
                     self.assertEqual(call.kwargs, first.kwargs)
                 command = first.args[0]
                 self.assertIn('--user_data_root=' + str(user), command)

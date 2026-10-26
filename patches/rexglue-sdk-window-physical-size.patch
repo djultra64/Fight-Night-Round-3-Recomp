@@ -1,0 +1,197 @@
+--- a/src/ui/window.cpp
++++ b/src/ui/window.cpp
+@@ -29,6 +29,10 @@
+ REXCVAR_DEFINE_INT32(window_height, 0, "UI/Window",
+                      "Startup window height in logical pixels (0 = use app default)")
+     .range(0, 8192)
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++REXCVAR_DEFINE_BOOL(window_size_in_pixels, false, "UI/Window",
++                    "Interpret startup window dimensions as physical client pixels")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+ // kHotReload (default): Window::SetFullscreen can be applied live, so the
+--- a/src/ui/window_sdl.cpp
++++ b/src/ui/window_sdl.cpp
+@@ -133,7 +133,66 @@
+   DestroySDLWindow();
+ }
+ 
++void WindowSDL::RecordWindowedPixelSize(uint32_t width, uint32_t height) {
++  if (!width || !height) return;
++  windowed_pixel_width_ = width;
++  windowed_pixel_height_ = height;
++  windowed_pixel_density_ = GetPixelDensity();
++  SDL_GetWindowSize(sdl_window_, &windowed_coordinate_width_, nullptr);
++  OnDesiredLogicalSizeUpdate(SizeToLogical(width), SizeToLogical(height));
++}
++
++void WindowSDL::ApplyWindowedPixelSize() {
++  const float density = GetPixelDensity();
++  windowed_pixel_density_ = density;
++  windowed_pixel_size_pending_ = true;
++  if (!SDL_SetWindowSize(sdl_window_,
++                         std::max(1, int(std::lround(windowed_pixel_width_ / density))),
++                         std::max(1, int(std::lround(windowed_pixel_height_ / density)))) ||
++      !SDL_SyncWindow(sdl_window_)) {
++    // Retain the requested size for another display transition or reopen.
++    REXLOG_WARN("Physical window size could not be synchronized: {}", SDL_GetError());
++    return;
++  }
++  windowed_pixel_size_pending_ = false;
++  int width = 0, height = 0;
++  SDL_GetWindowSizeInPixels(sdl_window_, &width, &height);
++  if (width > 0 && height > 0) RecordWindowedPixelSize(uint32_t(width), uint32_t(height));
++  REXLOG_INFO("Window client {}x{} pixels, backing density {}, display scale {}",
++              width, height, density, SDL_GetWindowDisplayScale(sdl_window_));
++}
++
++void WindowSDL::UpdateWindowedPixelSize() {
++  const auto flags = SDL_GetWindowFlags(sdl_window_);
++  if (flags & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MINIMIZED)) return;
++  int coordinate_width = 0;
++  SDL_GetWindowSize(sdl_window_, &coordinate_width, nullptr);
++  // SDL derives density from rounded pixel_width / coordinate_width. A manual
++  // resize at fractional scaling can change that ratio by up to one pixel per
++  // measurement, without any change of output scale.
++  const float rounding_tolerance = 1.0f / std::max(1, coordinate_width) +
++                                   1.0f / std::max(1, windowed_coordinate_width_);
++  if (std::fabs(GetPixelDensity() - windowed_pixel_density_) > rounding_tolerance) {
++    ApplyWindowedPixelSize();
++    return;
++  }
++  // SDL event dimensions may precede a size request already applied while
++  // processing an earlier scale event. Read current pixels, not queued sizes.
++  int width = 0, height = 0;
++  SDL_GetWindowSizeInPixels(sdl_window_, &width, &height);
++  if (windowed_pixel_size_pending_) {
++    if (uint32_t(width) != windowed_pixel_width_ || uint32_t(height) != windowed_pixel_height_) return;
++    windowed_pixel_size_pending_ = false;
++  }
++  if (width > 0 && height > 0) RecordWindowedPixelSize(uint32_t(width), uint32_t(height));
++}
++
+ bool WindowSDL::OpenImpl() {
++  const bool size_in_pixels = REXCVAR_GET(window_size_in_pixels);
++  if (size_in_pixels && !windowed_pixel_width_) {
++    windowed_pixel_width_ = GetDesiredLogicalWidth();
++    windowed_pixel_height_ = GetDesiredLogicalHeight();
++  }
+   // SDL window coordinates are physical pixels on Windows and X11. Cocoa
+   // uses logical points and applies the backing scale itself.
+   SDL_WindowFlags flags = SDL_WINDOW_RESIZABLE | SDL_WINDOW_HIGH_PIXEL_DENSITY | SDL_WINDOW_HIDDEN;
+@@ -141,8 +200,10 @@
+   int initial_width = int(GetDesiredLogicalWidth());
+   int initial_height = int(GetDesiredLogicalHeight());
+ #else
+-  int initial_width = int(SizeToPhysical(GetDesiredLogicalWidth()));
+-  int initial_height = int(SizeToPhysical(GetDesiredLogicalHeight()));
++  int initial_width = int(size_in_pixels ? windowed_pixel_width_
++                                                          : SizeToPhysical(GetDesiredLogicalWidth()));
++  int initial_height = int(size_in_pixels ? windowed_pixel_height_
++                                                           : SizeToPhysical(GetDesiredLogicalHeight()));
+ #endif
+   sdl_window_ = SDL_CreateWindow(GetTitle().c_str(), initial_width, initial_height, flags);
+   if (!sdl_window_) {
+@@ -170,10 +231,6 @@
+     }
+   }
+ 
+-  if (IsFullscreen()) {
+-    // Borderless desktop fullscreen (a NULL display mode is SDL3's default).
+-    SDL_SetWindowFullscreen(sdl_window_, true);
+-  }
+ #if REX_PLATFORM_MAC
+   CFPreferencesSetAppValue(CFSTR("ApplePressAndHoldEnabled"), kCFBooleanFalse,
+                            kCFPreferencesCurrentApplication);
+@@ -184,6 +241,17 @@
+   ApplyTextInputActiveNow();
+   ApplyCursorVisibilityNow();
+   SDL_ShowWindow(sdl_window_);
++  if (size_in_pixels) {
++    // Wayland may choose a provisional density while hidden. Resolve the real
++    // output before converting physical pixels to window coordinates.
++    SDL_SyncWindow(sdl_window_);
++    ApplyWindowedPixelSize();
++  }
++  if (IsFullscreen()) {
++    // Establish the windowed restore size before entering borderless fullscreen.
++    SDL_SetWindowFullscreen(sdl_window_, true);
++  }
++
+ 
+   // Actualize state for the common Window code. Listener dispatch is handled
+   // by Window::Open after OpenImpl returns; these only record initial state.
+@@ -279,7 +347,7 @@
+ 
+ float WindowSDL::GetPixelDensity() const {
+   float density = sdl_window_ ? SDL_GetWindowPixelDensity(sdl_window_) : 1.0f;
+-  return density > 0.0f ? density : 1.0f;
++  return density > 0.0f && std::isfinite(density) ? density : 1.0f;
+ }
+ 
+ uint32_t WindowSDL::GetLatestDpiImpl() const {
+@@ -442,15 +510,24 @@
+ void WindowSDL::HandleWindowEvent(SDL_Event& event) {
+   WindowDestructionReceiver destruction_receiver(this);
+   switch (event.type) {
+-    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED:
+-      OnActualSizeUpdate(uint32_t(event.window.data1), uint32_t(event.window.data2),
+-                         destruction_receiver);
+-      break;
++    case SDL_EVENT_WINDOW_PIXEL_SIZE_CHANGED: {
++      int width = event.window.data1, height = event.window.data2;
++      if (REXCVAR_GET(window_size_in_pixels)) {
++        UpdateWindowedPixelSize();
++        SDL_GetWindowSizeInPixels(sdl_window_, &width, &height);
++      }
++      OnActualSizeUpdate(uint32_t(width), uint32_t(height), destruction_receiver);
++      break;
++    }
+     case SDL_EVENT_WINDOW_RESIZED: {
+       // Track the user-driven size as the desired size for the normal state
+       // only (mirrors the Win32 WM_SIZE handling).
+       SDL_WindowFlags flags = SDL_GetWindowFlags(sdl_window_);
+       if (!(flags & (SDL_WINDOW_MAXIMIZED | SDL_WINDOW_FULLSCREEN | SDL_WINDOW_MINIMIZED))) {
++        if (REXCVAR_GET(window_size_in_pixels)) {
++          UpdateWindowedPixelSize();
++          break;
++        }
+ #if REX_PLATFORM_MAC
+         // Cocoa reports the client size in logical points. Converting it from
+         // the backing DPI a second time would halve the desired size on Retina
+@@ -464,6 +541,7 @@
+       break;
+     }
+     case SDL_EVENT_WINDOW_DISPLAY_SCALE_CHANGED: {
++      if (REXCVAR_GET(window_size_in_pixels)) UpdateWindowedPixelSize();
+       UISetupEvent e(this);
+       OnDpiChanged(e, destruction_receiver);
+       break;
+--- a/include/rex/ui/flags.h
++++ b/include/rex/ui/flags.h
+@@ -28,6 +28,7 @@
+ REXCVAR_DECLARE(bool, host_present_from_non_ui_thread);
+ REXCVAR_DECLARE(int32_t, window_width);
+ REXCVAR_DECLARE(int32_t, window_height);
++REXCVAR_DECLARE(bool, window_size_in_pixels);
+ REXCVAR_DECLARE(bool, fullscreen);
+ REXCVAR_DECLARE(int32_t, monitor);
+ REXCVAR_DECLARE(std::string, video_driver);
+--- a/include/rex/ui/window_sdl.h
++++ b/include/rex/ui/window_sdl.h
+@@ -79,6 +79,14 @@
+   // expect. Never zero.
+   float GetPixelDensity() const;
+ 
++  void RecordWindowedPixelSize(uint32_t width, uint32_t height);
++  void ApplyWindowedPixelSize();
++  void UpdateWindowedPixelSize();
++  float windowed_pixel_density_ = 0.0f;
++  int windowed_coordinate_width_ = 0;
++  bool windowed_pixel_size_pending_ = false;
++  uint32_t windowed_pixel_width_ = 0;
++  uint32_t windowed_pixel_height_ = 0;
+   SDL_Window* sdl_window_ = nullptr;
+   SDL_WindowID sdl_window_id_ = 0;
+   std::atomic<bool> paint_pending_{false};

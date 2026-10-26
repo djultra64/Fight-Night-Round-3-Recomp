@@ -1,0 +1,462 @@
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -12,6 +12,7 @@
+ #include <algorithm>
+ #include <array>
+ #include <atomic>
++#include <chrono>
+ #include <cstdint>
+ #include <cstring>
+ #include <memory>
+@@ -53,6 +54,10 @@
+     vulkan_pipeline_creation_threads, -1, "GPU/Vulkan",
+     "Number of pipeline creation threads for Vulkan async pipeline creation (-1 for auto)")
+     .range(-1, 32)
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
++REXCVAR_DEFINE_BOOL(vulkan_complete_draws, false, "GPU/Vulkan",
++                    "Wait for required pipelines instead of discarding incomplete draws")
+     .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
+ 
+ REXCVAR_DEFINE_BOOL(vulkan_persistent_pipeline_cache, true, "GPU/Vulkan",
+@@ -476,6 +481,7 @@
+ 
+ void VulkanPipelineCache::InitializeShaderStorage(const std::filesystem::path& cache_root,
+                                                   uint32_t title_id, bool blocking) {
++  DrainPipelineCreation();
+   ShutdownShaderStorage();
+   InitializeDriverCache(cache_root, title_id);
+   {
+@@ -708,7 +714,16 @@
+     pipeline_creations.push_back(creation_arguments);
+   }
+ 
+-  if (!pipeline_creations.empty()) {
++  if (!pipeline_creations.empty() && !blocking && REXCVAR_GET(vulkan_complete_draws) &&
++      !creation_threads_.empty()) {
++    // Cached descriptions already have all dependencies looked up on this
++    // thread. Compile progressively; a draw waits only for its own record.
++    for (const auto& arguments : pipeline_creations) {
++      QueuePipelineCreation(arguments);
++    }
++    REXGPU_INFO("Queued {} cached Vulkan pipelines for background preparation",
++                pipeline_creations.size());
++  } else if (!pipeline_creations.empty()) {
+     {
+       std::lock_guard<std::mutex> lock(creation_request_lock_);
+       startup_loading_ = true;
+@@ -726,11 +741,6 @@
+     } else {
+       creation_thread_count = std::min(uint32_t(REXCVAR_GET(vulkan_pipeline_creation_threads)),
+                                        logical_processor_count);
+-    }
+-    if (!blocking) {
+-      // Vulkan currently doesn't support deferred pipeline handles at draw time,
+-      // so complete preload creation regardless of blocking mode.
+-      creation_thread_count = std::max(creation_thread_count, size_t(1));
+     }
+     creation_thread_count = std::min(creation_thread_count, pipeline_creations.size());
+ 
+@@ -854,36 +864,39 @@
+     pipeline_storage_file_flush_needed_ = false;
+   }
+ 
+-  if (!creation_threads_.empty()) {
+-    bool startup_loading = false;
+-    {
+-      std::lock_guard<std::mutex> lock(creation_request_lock_);
+-      startup_loading = startup_loading_;
+-    }
+-    if (startup_loading) {
+-      creation_request_cond_.notify_one();
+-    } else {
+-      // Help worker threads on the processor thread to reduce warm-up latency.
+-      CreateQueuedPipelinesOnProcessorThread();
+-      bool await_creation_completion_event;
+-      {
+-        std::lock_guard<std::mutex> lock(creation_request_lock_);
+-        // The queue is empty because of CreateQueuedPipelinesOnProcessorThread,
+-        // only check in-flight creation by worker threads.
+-        await_creation_completion_event = creation_threads_busy_ != 0;
+-        if (await_creation_completion_event) {
+-          creation_completion_event_->Reset();
+-          creation_completion_set_event_ = true;
+-        }
+-      }
+-      if (await_creation_completion_event) {
+-        creation_request_cond_.notify_one();
+-        rex::thread::Wait(creation_completion_event_.get(), false);
+-      }
+-    }
+-  }
+-
++  if (!REXCVAR_GET(vulkan_complete_draws)) {
++    DrainPipelineCreation();
++  }
++
++  const auto wait_count = pipeline_wait_count_.load(std::memory_order_relaxed);
++  if (wait_count != pipeline_wait_reported_count_) {
++    const auto now = std::chrono::steady_clock::now();
++    if (now - pipeline_wait_last_report_ >= std::chrono::seconds(5)) {
++      REXGPU_INFO("Vulkan required-pipeline waits: {}, total {} us", wait_count,
++                  pipeline_wait_microseconds_.load(std::memory_order_relaxed));
++      pipeline_wait_reported_count_ = wait_count;
++      pipeline_wait_last_report_ = now;
++    }
++  }
+   ProcessDeferredPipelineDestructions(false);
++}
++
++void VulkanPipelineCache::DrainPipelineCreation() {
++  if (creation_threads_.empty()) return;
++  CreateQueuedPipelinesOnProcessorThread();
++  bool wait;
++  {
++    std::lock_guard<std::mutex> lock(creation_request_lock_);
++    wait = creation_threads_busy_ != 0;
++    if (wait) {
++      creation_completion_event_->Reset();
++      creation_completion_set_event_ = true;
++    }
++  }
++  if (wait) {
++    creation_request_cond_.notify_all();
++    rex::thread::Wait(creation_completion_event_.get(), false);
++  }
+ }
+ 
+ void VulkanPipelineCache::Shutdown() {
+@@ -902,6 +915,9 @@
+   {
+     std::lock_guard<std::mutex> lock(creation_request_lock_);
+     while (!creation_queue_.empty()) {
++      auto& state = creation_queue_.top().pipeline->second.creation_status;
++      state.store(CreationStatus::kFailed, std::memory_order_release);
++      state.notify_all();
+       creation_queue_.pop();
+     }
+     creation_threads_busy_ = 0;
+@@ -910,6 +926,8 @@
+     creation_threads_shutdown_from_ = SIZE_MAX;
+   }
+   creation_completion_event_.reset();
++  REXGPU_INFO("Vulkan required-pipeline waits: {}, total {} us",
++              pipeline_wait_count_.exchange(0), pipeline_wait_microseconds_.exchange(0));
+ 
+   ShutdownShaderStorage();
+   CloseDriverCache();
+@@ -1194,20 +1212,14 @@
+     return false;
+   }
+   if (last_pipeline_ && last_pipeline_->first == description) {
+-    VkPipeline last_pipeline = last_pipeline_->second.pipeline.load(std::memory_order_acquire);
+-    const PipelineLayoutProvider* last_pipeline_layout =
+-        last_pipeline_->second.pipeline_layout.load(std::memory_order_acquire);
+-    if (last_pipeline != VK_NULL_HANDLE && last_pipeline_layout != nullptr) {
+-      pipeline_out = last_pipeline;
+-      pipeline_layout_out = last_pipeline_layout;
+-      if (pipeline_handle_out) {
+-        *pipeline_handle_out = const_cast<Pipeline*>(&last_pipeline_->second);
+-      }
+-      return true;
+-    }
+-  }
+-
+-  bool use_async = REXCVAR_GET(async_shader_compilation) && !creation_threads_.empty() &&
++    bool pending = false;
++    GetPipelineAndLayoutByHandle(const_cast<Pipeline*>(&last_pipeline_->second), pipeline_out, pipeline_layout_out, &pending);
++    if (pipeline_handle_out) *pipeline_handle_out = const_cast<Pipeline*>(&last_pipeline_->second);
++    return pending || (pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr);
++  }
++
++  bool use_async = !REXCVAR_GET(vulkan_complete_draws) &&
++                   REXCVAR_GET(async_shader_compilation) && !creation_threads_.empty() &&
+                    pixel_shader && placeholder_pixel_shader_ != VK_NULL_HANDLE;
+   uint8_t async_priority = pipeline_util::kPriorityLowest;
+   if (use_async) {
+@@ -1223,24 +1235,18 @@
+ 
+   auto it = pipelines_.find(description);
+   if (it != pipelines_.end()) {
+-    VkPipeline found_pipeline = it->second.pipeline.load(std::memory_order_acquire);
+-    if (found_pipeline == VK_NULL_HANDLE) {
++    if (it->second.creation_status.load(std::memory_order_acquire) == CreationStatus::kEmpty) {
+       PipelineCreationArguments creation_arguments;
+       if (!TryGetPipelineCreationArgumentsForDescription(description, &*it, creation_arguments) ||
+           !EnsurePipelineCreated(creation_arguments)) {
+         return false;
+       }
+-      found_pipeline = it->second.pipeline.load(std::memory_order_acquire);
+-    }
+-    const PipelineLayoutProvider* found_pipeline_layout =
+-        it->second.pipeline_layout.load(std::memory_order_acquire);
++    }
+     last_pipeline_ = &*it;
+-    pipeline_out = found_pipeline;
+-    pipeline_layout_out = found_pipeline_layout;
+-    if (pipeline_handle_out) {
+-      *pipeline_handle_out = &it->second;
+-    }
+-    return pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr;
++    bool pending = false;
++    GetPipelineAndLayoutByHandle(&it->second, pipeline_out, pipeline_layout_out, &pending);
++    if (pipeline_handle_out) *pipeline_handle_out = &it->second;
++    return pending || (pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr);
+   }
+ 
+   // Create the pipeline if not already existing.
+@@ -1260,11 +1266,7 @@
+                                                       creation_arguments_placeholder, true)) {
+       pipeline.second.is_placeholder.store(true, std::memory_order_release);
+       if (EnsurePipelineCreated(creation_arguments_placeholder, placeholder_pixel_shader_)) {
+-        {
+-          std::lock_guard<std::mutex> lock(creation_request_lock_);
+-          creation_queue_.push(creation_arguments_real);
+-        }
+-        creation_request_cond_.notify_one();
++        QueuePipelineCreation(creation_arguments_real);
+         queued_async_creation = true;
+       } else {
+         pipeline.second.is_placeholder.store(false, std::memory_order_release);
+@@ -1293,12 +1295,12 @@
+     storage_write_request_cond_.notify_all();
+   }
+   last_pipeline_ = &pipeline;
+-  pipeline_out = pipeline.second.pipeline.load(std::memory_order_acquire);
+-  pipeline_layout_out = pipeline.second.pipeline_layout.load(std::memory_order_acquire);
++  bool pending = false;
++  GetPipelineAndLayoutByHandle(&pipeline.second, pipeline_out, pipeline_layout_out, &pending);
+   if (pipeline_handle_out) {
+     *pipeline_handle_out = &pipeline.second;
+   }
+-  return pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr;
++  return pending || (pipeline_out != VK_NULL_HANDLE && pipeline_layout_out != nullptr);
+ }
+ 
+ bool VulkanPipelineCache::IsCreatingPipelines() const {
+@@ -1312,20 +1314,28 @@
+ void VulkanPipelineCache::GetPipelineAndLayoutByHandle(
+     void* handle, VkPipeline& pipeline_out, const PipelineLayoutProvider*& pipeline_layout_out,
+     bool* is_placeholder_out) const {
+-  if (!handle) {
+-    pipeline_out = VK_NULL_HANDLE;
+-    pipeline_layout_out = nullptr;
+-    if (is_placeholder_out) {
+-      *is_placeholder_out = false;
+-    }
+-    return;
+-  }
++  pipeline_out = VK_NULL_HANDLE;
++  pipeline_layout_out = nullptr;
++  if (is_placeholder_out) *is_placeholder_out = false;
++  if (!handle) return;
+   const auto* pipeline = reinterpret_cast<const Pipeline*>(handle);
+-  pipeline_out = pipeline->pipeline.load(std::memory_order_acquire);
+-  pipeline_layout_out = pipeline->pipeline_layout.load(std::memory_order_acquire);
+-  if (is_placeholder_out) {
+-    *is_placeholder_out = pipeline->is_placeholder.load(std::memory_order_acquire);
+-  }
++  auto status = pipeline->creation_status.load(std::memory_order_acquire);
++  if (status == CreationStatus::kPending && REXCVAR_GET(vulkan_complete_draws)) {
++    const auto started = std::chrono::steady_clock::now();
++    do {
++      pipeline->creation_status.wait(CreationStatus::kPending, std::memory_order_acquire);
++      status = pipeline->creation_status.load(std::memory_order_acquire);
++    } while (status == CreationStatus::kPending);
++    pipeline_wait_count_.fetch_add(1, std::memory_order_relaxed);
++    pipeline_wait_microseconds_.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
++        std::chrono::steady_clock::now() - started).count()), std::memory_order_relaxed);
++  }
++  if (is_placeholder_out) *is_placeholder_out = status == CreationStatus::kPending;
++  if (status != CreationStatus::kReady) return;
++  // Ready acquires the pair published by the compiler. These values are
++  // immutable until cache teardown; a placeholder never becomes Ready.
++  pipeline_out = pipeline->pipeline.load(std::memory_order_relaxed);
++  pipeline_layout_out = pipeline->pipeline_layout.load(std::memory_order_relaxed);
+ }
+ 
+ bool VulkanPipelineCache::TranslateAnalyzedShader(SpirvShaderTranslator& translator,
+@@ -3102,7 +3112,29 @@
+   return true;
+ }
+ 
+-bool VulkanPipelineCache::EnsurePipelineCreated(const PipelineCreationArguments& creation_arguments,
++void VulkanPipelineCache::QueuePipelineCreation(const PipelineCreationArguments& arguments) {
++  {
++    std::lock_guard<std::mutex> lock(creation_request_lock_);
++    arguments.pipeline->second.creation_status.store(CreationStatus::kPending,
++                                                     std::memory_order_release);
++    creation_queue_.push(arguments);
++  }
++  creation_request_cond_.notify_one();
++}
++
++bool VulkanPipelineCache::EnsurePipelineCreated(const PipelineCreationArguments& arguments,
++                                                VkShaderModule fragment_shader_override) {
++  bool created = CreatePipeline(arguments, fragment_shader_override);
++  if (fragment_shader_override == VK_NULL_HANDLE) {
++    auto& state = arguments.pipeline->second.creation_status;
++    state.store(created ? CreationStatus::kReady : CreationStatus::kFailed,
++                std::memory_order_release);
++    state.notify_all();
++  }
++  return created;
++}
++
++bool VulkanPipelineCache::CreatePipeline(const PipelineCreationArguments& creation_arguments,
+                                                 VkShaderModule fragment_shader_override) {
+   VkPipeline existing_pipeline =
+       creation_arguments.pipeline->second.pipeline.load(std::memory_order_acquire);
+@@ -3639,20 +3671,7 @@
+       ++creation_threads_busy_;
+     }
+ 
+-    bool created = EnsurePipelineCreated(creation_arguments);
+-    if (!created) {
+-      bool has_placeholder =
+-          creation_arguments.pipeline->second.is_placeholder.load(std::memory_order_acquire);
+-      VkPipeline pipeline =
+-          creation_arguments.pipeline->second.pipeline.load(std::memory_order_acquire);
+-      if (has_placeholder && pipeline != VK_NULL_HANDLE) {
+-        // Keep the placeholder resident and stop waiting for a real pipeline.
+-        creation_arguments.pipeline->second.is_placeholder.store(false, std::memory_order_release);
+-      } else {
+-        creation_arguments.pipeline->second.pipeline.store(VK_NULL_HANDLE,
+-                                                           std::memory_order_release);
+-      }
+-    }
++    EnsurePipelineCreated(creation_arguments);
+ 
+     {
+       std::lock_guard<std::mutex> lock(creation_request_lock_);
+@@ -3673,19 +3692,7 @@
+       creation_arguments = creation_queue_.top();
+       creation_queue_.pop();
+     }
+-    bool created = EnsurePipelineCreated(creation_arguments);
+-    if (!created) {
+-      bool has_placeholder =
+-          creation_arguments.pipeline->second.is_placeholder.load(std::memory_order_acquire);
+-      VkPipeline pipeline =
+-          creation_arguments.pipeline->second.pipeline.load(std::memory_order_acquire);
+-      if (has_placeholder && pipeline != VK_NULL_HANDLE) {
+-        creation_arguments.pipeline->second.is_placeholder.store(false, std::memory_order_release);
+-      } else {
+-        creation_arguments.pipeline->second.pipeline.store(VK_NULL_HANDLE,
+-                                                           std::memory_order_release);
+-      }
+-    }
++    EnsurePipelineCreated(creation_arguments);
+   }
+ }
+ 
+--- a/include/rex/graphics/vulkan/pipeline_cache.h
++++ b/include/rex/graphics/vulkan/pipeline_cache.h
+@@ -11,6 +11,7 @@
+  */
+ 
+ #include <atomic>
++#include <chrono>
+ #include <shared_mutex>
+ #include "pipeline_cache_file.h"
+ #include <condition_variable>
+@@ -71,6 +72,8 @@
+                                bool blocking);
+   void ShutdownShaderStorage();
+   void EndSubmission();
++  // Wait before invalidating render passes referenced by cached compilation jobs.
++  void DrainPipelineCreation();
+ 
+   VulkanShader* LoadShader(xenos::ShaderType shader_type, const uint32_t* host_address,
+                            uint32_t dword_count);
+@@ -248,19 +251,24 @@
+     PipelineDescription description;
+   });
+ 
++  enum class CreationStatus { kEmpty, kPending, kReady, kFailed };
++
+   struct Pipeline {
+     std::atomic<VkPipeline> pipeline{VK_NULL_HANDLE};
+     // The layouts are owned by the VulkanCommandProcessor, and must not be
+     // destroyed by it while the pipeline cache is active.
+     std::atomic<const PipelineLayoutProvider*> pipeline_layout{nullptr};
+     std::atomic<bool> is_placeholder{false};
++    // Ready is published only after both the real handle and layout are final.
++    std::atomic<CreationStatus> creation_status{CreationStatus::kEmpty};
+     Pipeline() = default;
+     Pipeline(const PipelineLayoutProvider* pipeline_layout_provider)
+         : pipeline_layout(pipeline_layout_provider) {}
+     Pipeline(const Pipeline& other)
+         : pipeline(other.pipeline.load(std::memory_order_acquire)),
+           pipeline_layout(other.pipeline_layout.load(std::memory_order_acquire)),
+-          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)) {}
++          is_placeholder(other.is_placeholder.load(std::memory_order_acquire)),
++          creation_status(other.creation_status.load(std::memory_order_acquire)) {}
+     Pipeline& operator=(const Pipeline& other) {
+       if (this == &other) {
+         return *this;
+@@ -270,6 +278,8 @@
+                             std::memory_order_release);
+       is_placeholder.store(other.is_placeholder.load(std::memory_order_acquire),
+                            std::memory_order_release);
++      creation_status.store(other.creation_status.load(std::memory_order_acquire),
++                            std::memory_order_release);
+       return *this;
+     }
+   };
+@@ -383,6 +393,9 @@
+   // available.
+   bool EnsurePipelineCreated(const PipelineCreationArguments& creation_arguments,
+                              VkShaderModule fragment_shader_override = VK_NULL_HANDLE);
++  bool CreatePipeline(const PipelineCreationArguments& creation_arguments,
++                      VkShaderModule fragment_shader_override);
++  void QueuePipelineCreation(const PipelineCreationArguments& creation_arguments);
+   void CreationThread(size_t thread_index);
+   void CreateQueuedPipelinesOnProcessorThread();
+   void ProcessDeferredPipelineDestructions(bool force_all);
+@@ -474,6 +487,10 @@
+   bool storage_write_thread_shutdown_ = false;
+   std::unique_ptr<rex::thread::Thread> storage_write_thread_;
+ 
++  std::chrono::steady_clock::time_point pipeline_wait_last_report_{};
++  uint64_t pipeline_wait_reported_count_ = 0;
++  mutable std::atomic<uint64_t> pipeline_wait_count_{0};
++  mutable std::atomic<uint64_t> pipeline_wait_microseconds_{0};
+   mutable std::mutex creation_request_lock_;
+   std::condition_variable creation_request_cond_;
+   std::priority_queue<PipelineCreationArguments, std::vector<PipelineCreationArguments>,
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -5507,6 +5507,9 @@
+ 
+       texture_cache_->ClearCache();
+ 
++      // Cached jobs can still be compiling against these render passes even
++      // after the GPU queue is idle. Join them before releasing dependencies.
++      pipeline_cache_->DrainPipelineCreation();
+       render_target_cache_->ClearCache();
+ 
+       // Not clearing the pipeline layouts and the descriptor set layouts as
+--- a/src/ui/rex_app.cpp
++++ b/src/ui/rex_app.cpp
+@@ -51,6 +51,10 @@
+                       "GPU emulation")
+     .lifecycle(rex::cvar::Lifecycle::kInitOnly);
+ 
++REXCVAR_DEFINE_BOOL(shader_preload_blocking, true, "GPU",
++                    "Finish cached pipeline preparation before starting the guest")
++    .lifecycle(rex::cvar::Lifecycle::kRequiresRestart);
++
+ namespace rex {
+ 
+ // --- ReXApp ---
+@@ -461,7 +465,8 @@
+       uint32_t title_id = runtime_->kernel_state()->title_id();
+       if (title_id != 0) {
+         REXLOG_INFO("Initializing shader storage for title {:08X}...", title_id);
+-        graphics_system->InitializeShaderStorage(runtime_->cache_root(), title_id, true);
++        graphics_system->InitializeShaderStorage(runtime_->cache_root(), title_id,
++                                                 REXCVAR_GET(shader_preload_blocking));
+       }
+     }
+ 
