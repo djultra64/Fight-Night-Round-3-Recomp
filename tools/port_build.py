@@ -16,7 +16,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCT = 'Fight Night Round 3 Recomp'
-VERSION = '1.0.2'
+VERSION = '1.0.3'
 EXTRACT_XISO_PIN = '3f5b62cfe68f000b0e3c8a30104973f3a297948e'
 PIN = 'f5337cdc947ff6d4c4196737e2c807a48f2a1fc2'
 PATCHES = (

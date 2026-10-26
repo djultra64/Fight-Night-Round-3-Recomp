@@ -1,8 +1,8 @@
 # Fight Night Round 3 Recomp
 
-**Version 1.0.2 · Project work by [djultra64](https://github.com/djultra64)**
+**Version 1.0.3 · Project work by [djultra64](https://github.com/djultra64)**
 
-Version 1.0.2 fixes saved custom boxer hair colors and adds a native 30/60 FPS selector. See the [1.0.2 release notes](docs/beta/release-notes-1.0.2.md).
+Version 1.0.3 improves startup, rendering consistency and desktop scaling, and fixes Options/profile saving behavior. See the [1.0.3 release notes](docs/beta/release-notes-1.0.3.md).
 
 An unofficial PC recompilation of Fight Night Round 3 for Xbox 360, built with ReXGlue and the Xenos renderer: Vulkan on Linux and Windows. Version 1.0 brings native 60 FPS gameplay while preserving the original gameplay speed, with configurable resolution and a native settings interface.
 
@@ -10,15 +10,17 @@ You must supply your own supported USA game data. No disc images, XEX executable
 
 ## Release status
 
-Version 1.0.2 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
+Version 1.0.3 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
 
 Read the [known issues](docs/beta/known-issues.md) before installing. Downloads are available through [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases).
 
-## New in 1.0.2
+## New in 1.0.3
 
-This release adds **FRAME RATE: 30 FPS / 60 FPS** to **OPTIONS → GRAPHICS**, with 60 FPS as the default. Use **SAVE AND RESTART** to apply a change; **SAVE** keeps the current session's timing until the next launch. Intros retain their original cadence, and the 60 FPS mode preserves replay slow motion.
+Window resolution now uses physical pixels across desktop scaling and monitor changes. Draws wait for the Vulkan pipeline they need, while cached pipelines prepare in the background.
 
-Custom boxer hair-color baking now requests GPU readback only for the textures consumed by the original CPU compressor. Saved color values are preserved without enabling full-scene readback during combat. The fix also handles scaled rendering through 2160p.
+OPTIONS reopens correctly after leaving the menu, and confirming a custom boxer saves the active profile. Each launch keeps its own diagnostic log; `--diagnostics` adds startup details and optional Windows crash dumps.
+
+Thanks to **fransisigoswho** for reporting the startup, missing rendering and desktop scaling issues that helped guide these improvements.
 
 ## Features
 
@@ -38,7 +40,7 @@ A steady 60 FPS requires enough CPU/GPU headroom. Cached pipeline prewarming red
 
 ## Get started
 
-[Download version 1.0.2](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.2): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
+[Download version 1.0.3](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.3): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
 
 Linux:
 
@@ -81,6 +83,7 @@ PRs and forks improving frame pacing, performance or correct higher frame rates 
 - [Controls and controller prompts](docs/beta/controls.md)
 - [Known issues](docs/beta/known-issues.md)
 - [Troubleshooting](docs/beta/troubleshooting.md)
+- [Version 1.0.3 release notes](docs/beta/release-notes-1.0.3.md)
 - [Version 1.0.2 release notes](docs/beta/release-notes-1.0.2.md)
 - [Version 1.0.1 release notes](docs/beta/release-notes-1.0.1.md)
 - [Version 1.0 release notes](docs/beta/release-notes-1.0.md)

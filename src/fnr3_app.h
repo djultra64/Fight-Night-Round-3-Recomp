@@ -35,12 +35,12 @@ public:
 
   static std::unique_ptr<rex::ui::WindowedApp>
   Create(rex::ui::WindowedAppContext &ctx) {
-    return std::unique_ptr<Fnr3App>(new Fnr3App(ctx, "Fight Night Round 3 Recomp v1.0.2", PPCImageConfig));
+    return std::unique_ptr<Fnr3App>(new Fnr3App(ctx, "Fight Night Round 3 Recomp v1.0.3", PPCImageConfig));
   }
 
   // Override virtual hooks for customization:
   void OnPostInitLogging() override {
-    REXLOG_INFO("FNR3: startup diagnostics; build 1.0.2 + stability candidate, work djultra64");
+    REXLOG_INFO("FNR3: startup diagnostics; build 1.0.3, work djultra64");
 #if defined(_WIN32)
     // The launcher passes a distinct directory for every diagnostic attempt.
     if (const wchar_t* directory = _wgetenv(L"FNR3_DIAGNOSTICS_DIR")) {

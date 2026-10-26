@@ -1,15 +1,17 @@
 # Changelog
 
-## Unreleased
+## 1.0.3
 
 - Keep the selected window resolution in physical pixels across desktop scaling, display selection and window reopening.
 - Preserve draws while cached Vulkan pipelines compile, publish completed pipeline/layout pairs together, and reject failed compilations without treating provisional graphics as complete.
 - Prepare cached pipelines in the background, synchronize graphics task dispatch, and finish dependent compilation before clearing render targets.
 - Keep separate runtime logs and exit metadata for every launcher attempt. Add `--diagnostics` for startup details and optional Windows unhandled-crash dumps.
-- Thanks to **fransisigoswho** for reporting the intermittent startup, missing rendering and desktop scaling problems in 1.0.2. These changes address confirmed defects; validation of the complete reported issue remains in progress.
+- Thanks to **fransisigoswho** for reporting the intermittent startup, missing rendering and desktop scaling problems in 1.0.2 and helping guide these improvements.
 
 - Fixed OPTIONS reopening as an empty TITLE TEXT screen after leaving and re-entering the menu.
 - Save the active profile when a custom boxer is confirmed in CREATE CHAMP, including edits to an existing boxer. Wait for storage completion and offer Retry or Continue Without Saving if storage is cancelled or fails.
+
+See the [1.0.3 release notes](docs/beta/release-notes-1.0.3.md).
 
 ## 1.0.2
 
