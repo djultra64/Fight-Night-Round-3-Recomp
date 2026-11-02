@@ -1,5 +1,13 @@
 # Changelog
 
+## 1.0.5
+
+- Fix rounded collision-plane cosines overflowing local grouping arrays during the reproduced Dodge / Mickey Ward career load.
+- Remove excess native-canvas memory reservation to prevent the reproduced 1080p trainer-texture allocation failure, preserving resolution and allocator margins.
+- Add targeted regression coverage; preserve documented limits on career, startup and performance validation.
+
+See the [1.0.5 release notes](docs/beta/release-notes-1.0.5.md).
+
 ## 1.0.4
 
 - Match resolution presets to exact internal dimensions and correct fullscreen video, UI/HUD and bloom/scissor placement.

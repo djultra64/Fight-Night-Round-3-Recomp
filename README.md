@@ -2,9 +2,9 @@
 
 # Fight Night Round 3 Recomp
 
-**Version 1.0.4 · Project work by [djultra64](https://github.com/djultra64)**
+**Version 1.0.5 · Project work by [djultra64](https://github.com/djultra64)**
 
-Version 1.0.4 aligns internal rendering with the selected resolution, corrects fullscreen video and UI placement, and includes targeted graphics, pause-menu and audio stability fixes. See the [1.0.4 release notes](docs/beta/release-notes-1.0.4.md).
+Version 1.0.5 fixes a reproduced crash loading the Dodge / Mickey Ward career fight and an additional native-1080p asset-allocation failure, while preserving the selected internal resolution. See the [1.0.5 release notes](docs/beta/release-notes-1.0.5.md).
 
 An unofficial PC recompilation of Fight Night Round 3 for Xbox 360, built with ReXGlue and the Xenos renderer: Vulkan on Linux and Windows. Version 1.0 brings native 60 FPS gameplay while preserving the original gameplay speed, with configurable resolution and a native settings interface.
 
@@ -12,7 +12,7 @@ You must supply your own supported USA game data. No disc images, XEX executable
 
 ## Release status
 
-Version 1.0.4 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
+Version 1.0.5 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
 
 Read the [known issues](docs/beta/known-issues.md) before installing. Downloads are available through [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases).
 
@@ -25,7 +25,15 @@ Read the [known issues](docs/beta/known-issues.md) before installing. Downloads 
 
 These are planned areas of work; online play is not currently supported.
 
-## New in 1.0.4
+## New in 1.0.5
+
+- Repair collision-plane roundoff that could overflow the guest stack while loading the Dodge / Mickey Ward career fight ([issue #2](https://github.com/djultra64/Fight-Night-Round-3-Recomp/issues/2)).
+- Return 13 MiB of unused native-1080p canvas reservation to the asset heap, preventing the reproduced trainer-texture allocation failure without reducing internal resolution.
+- Add native regression coverage for both causes. The artificial Windows fixture passed loading, combat, pause/settings, results, return to career and save.
+
+See [validation and its limits](docs/issue-2-validation.md). Full career testing, intermittent loading issues and sustained 60 FPS validation remain ongoing.
+
+## Previous improvements in 1.0.4
 
 - Resolution presets now match their internal rendering dimensions, including native 900p and 1080p.
 - Corrected intro-video sizing, menu text, HUD bars, demo-mode text and bloom/scissor alignment for native canvases.
@@ -60,7 +68,7 @@ A steady 60 FPS requires enough CPU/GPU headroom. Cached pipeline prewarming red
 
 ## Get started
 
-[Download version 1.0.4](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.4): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
+[Download version 1.0.5](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.5): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
 
 Linux:
 
@@ -103,7 +111,7 @@ PRs and forks improving frame pacing, performance or correct higher frame rates 
 - [Controls and controller prompts](docs/beta/controls.md)
 - [Known issues](docs/beta/known-issues.md)
 - [Troubleshooting](docs/beta/troubleshooting.md)
-- [Version 1.0.4 release notes](docs/beta/release-notes-1.0.4.md)
+- [Version 1.0.5 release notes](docs/beta/release-notes-1.0.5.md)
 - [Version 1.0.3 release notes](docs/beta/release-notes-1.0.3.md)
 - [Version 1.0.2 release notes](docs/beta/release-notes-1.0.2.md)
 - [Version 1.0.1 release notes](docs/beta/release-notes-1.0.1.md)

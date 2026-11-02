@@ -1,6 +1,6 @@
-# Known issues — 1.0.4
+# Known issues — 1.0.5
 
-Version 1.0.4 uses native 60 FPS gameplay while preserving original gameplay speed. Intros retain their stock 30 FPS cadence, crowd animation uses fractional advancement, and replay updates use elapsed time to preserve slow motion. Complete game compatibility and uninterrupted play are not guaranteed.
+Version 1.0.5 uses native 60 FPS gameplay while preserving original gameplay speed. Intros retain their stock 30 FPS cadence, crowd animation uses fractional advancement, and replay updates use elapsed time to preserve slow motion. Complete game compatibility and uninterrupted play are not guaranteed.
 
 | Area | Current limitation |
 | --- | --- |
