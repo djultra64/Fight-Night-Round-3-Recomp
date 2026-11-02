@@ -48,6 +48,18 @@ int main() {
     const unsigned expected_scale = p.id == "1440p" || p.id == "1800p" ? 2u :
                                     p.id == "2160p" ? 3u : 1u;
     assert(p.scale == expected_scale);
+    assert(p.GuestWidth() * p.scale == p.width &&
+           p.GuestHeight() * p.scale == p.height);
+    // Keep all eight padded planes and the original pool margin, without
+    // taking whole unused 16 MiB blocks from the asset allocator.
+    constexpr uint64_t mib = uint64_t{1} << 20;
+    constexpr uint64_t stock_planes = uint64_t{1280} * 736 * 32;
+    const uint64_t planes = uint64_t{p.GuestWidth()} *
+        ((p.GuestHeight() + 31u) & ~31u) * 32;
+    const uint64_t growth = planes > stock_planes ? planes - stock_planes : 0;
+    const uint64_t reservation = uint64_t{p.ExtraGuestMemoryMiB()} * mib;
+    assert(reservation >= growth);
+    assert(reservation - growth < mib);
   }
   unsigned rejected = 0;
   for (auto bad : {GraphicsSettings{"1080p;quit", "none", "4x"},

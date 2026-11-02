@@ -107,8 +107,8 @@ int main(int argc,char**argv){try{
  } else if(mode=="physical_null"||mode=="physical_other"){
   c.lr=mode=="physical_other"?0x1234:0x8226DB64;c.r3.u64=448u<<20;bool threw=false;try{sub_8251B4F8(c,base);}catch(const std::runtime_error&){threw=true;}Check(physical_calls==1,"physical original not called");Check(threw==(mode=="physical_null"),"physical fallback guard");
  } else if(mode.ends_with("budget")||mode=="budget_other"){
-  const unsigned extra=mode.starts_with("720")?0:mode.starts_with("900")?32:48;Write32(0x827FCE80,400u<<20);Write32(0x2000+4,244u<<20);c.r3.u64=0x2000;c.lr=mode=="budget_other"?1:0x8226D5C4;
-  sub_8226DAE0(c,base);sub_8226DEB0(c,base);Check(root_calls==1&&child_calls==1,"allocator original not called");Check(Read32(0x827FCE80)==((extra?432u:400u)<<20),"root must leave at least80MiB for external physical allocations");Check(Read32(0x2000+4)==((244u+(mode=="budget_other"?0:extra))<<20),"child caller budget");
+  const unsigned extra=mode.starts_with("720")?0:mode.starts_with("900")?17:35;Write32(0x827FCE80,400u<<20);Write32(0x2000+4,244u<<20);c.r3.u64=0x2000;c.lr=mode=="budget_other"?1:0x8226D5C4;
+  sub_8226DAE0(c,base);sub_8226DEB0(c,base);Check(root_calls==1&&child_calls==1,"allocator original not called");Check(Read32(0x827FCE80)==((400u+std::min(32u,extra))<<20),"root must leave at least80MiB for external physical allocations");Check(Read32(0x2000+4)==((244u+(mode=="budget_other"?0:extra))<<20),"child caller budget");
  } else throw std::runtime_error("unknown contract");
  std::cout<<"PASS "<<mode<<"\n";return 0;
 }catch(const std::exception& e){std::cerr<<e.what()<<"\n";return 1;}}

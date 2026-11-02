@@ -9,7 +9,7 @@ from pathlib import Path
 import re
 
 TARGETS = ('8226E838', '82265A20', '82223260', '821A3D78', '821A3E58', '822552E8',
-           '82315B70', '823042B0', '8240A628', '82248450', '82236220')
+           '82315B70', '823042B0', '8240A628', '82248450', '82236220', '82224770')
 FUNCTION = re.compile(r'^DEFINE_REX_FUNC\(sub_([0-9A-F]{8})\) \{', re.MULTILINE)
 
 
@@ -28,6 +28,18 @@ def before_epilogue(body, call, stack_size):
 def patch_function(address, body):
     if 'Fnr3' in body or 'fnr3_' in body:
         raise ValueError(f'{address}: input already patched or instrumented; regenerate original code')
+    if address == '82224770':
+        # Float-normalized collision planes can self-dot one ULP above 1.
+        # acos then returns NaN, so duplicate planes fill the fixed local group
+        # arrays and corrupt the guest stack. Repair only tiny domain overshoot
+        # at this plane comparison; retain the original acos and invalid inputs.
+        call = '\tctx.lr = 0x82224A84;\n\tsub_826F92D8(ctx, base);'
+        return replace_exact(body, call,
+            '\t// Fnr3: tolerate four float ULPs of normalized-plane roundoff.\n'
+            '\tif (ctx.f1.f64 > 1.0 && ctx.f1.f64 <= 1.000000476837158203125)\n'
+            '\t\tctx.f1.f64 = 1.0;\n'
+            '\telse if (ctx.f1.f64 < -1.0 && ctx.f1.f64 >= -1.000000476837158203125)\n'
+            '\t\tctx.f1.f64 = -1.0;\n' + call)
     if address == '82236220':
         body = replace_exact(body, '\tREX_FUNC_PROLOGUE();',
             '\tREX_FUNC_PROLOGUE();\n\tconst auto fnr3_scale = Fnr3EnginePrimitiveScale(base);')

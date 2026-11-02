@@ -14,13 +14,14 @@ struct Resolution {
   constexpr unsigned GuestWidth() const { return width / scale; }
   constexpr unsigned GuestHeight() const { return height / scale; }
   // Eight padded 32-bit guest planes grow with the base canvas. Keep the
-  // original allocator margin, rounded conservatively in 16 MiB steps.
+  // original allocator margin, rounding up to MiB. Coarser rounding takes
+  // unused memory from the asset heap when root growth reaches its cap.
   constexpr unsigned ExtraGuestMemoryMiB() const {
     const uint64_t original = uint64_t(1280) * 736 * 32;
     const uint64_t required = uint64_t(GuestWidth()) *
         ((GuestHeight() + 31u) & ~31u) * 32;
     return required <= original ? 0u :
-        unsigned((required - original + (16u << 20) - 1) / (16u << 20)) * 16u;
+        unsigned((required - original + (1u << 20) - 1) / (1u << 20));
   }
 };
 inline constexpr auto Resolutions() {

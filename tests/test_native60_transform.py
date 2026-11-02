@@ -11,6 +11,19 @@ spec.loader.exec_module(native60)
 
 
 class TransformTests(unittest.TestCase):
+    def test_geometry_domain_repair_requires_the_exact_original_call(self):
+        self.assertIn('82224770', native60.TARGETS)
+        call = '\tctx.lr = 0x82224A84;\n\tsub_826F92D8(ctx, base);'
+        patched = native60.patch_function('82224770', call)
+        self.assertEqual(patched.count(call), 1)
+        self.assertLess(patched.index('ctx.f1.f64 = 1.0'), patched.index(call))
+        for drift in (call + call, call.replace('82224A84', '82224A88'),
+                      call.replace('826F92D8', '826F8FF0')):
+            with self.assertRaises(ValueError):
+                native60.patch_function('82224770', drift)
+        with self.assertRaises(ValueError):
+            native60.patch_function('82224770', patched)
+
     def test_exact_cardinality_rejects_generator_drift(self):
         with self.assertRaises(ValueError):
             native60.replace_exact('x x', 'x', 'y', 1)
