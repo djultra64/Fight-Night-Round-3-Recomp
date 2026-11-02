@@ -3,7 +3,7 @@
 # SDK boilerplate lives in generated/rexglue.cmake.
 
 cmake_minimum_required(VERSION 3.25)
-project(fnr3 VERSION 1.0.3 DESCRIPTION "Fight Night Round 3 Recomp" LANGUAGES CXX)
+project(fnr3 VERSION 1.0.4 DESCRIPTION "Fight Night Round 3 Recomp" LANGUAGES CXX)
 
 set(CMAKE_CXX_STANDARD 23)
 set(CMAKE_CXX_STANDARD_REQUIRED ON)
@@ -15,6 +15,7 @@ set(FNR3_SOURCES
     src/main.cpp
     src/port_crash_diagnostics.cpp
     src/port_graphics.cpp
+    src/port_resolution.cpp
     src/port_frontend.cpp
     src/port_menu.cpp
     src/port_profile_save.cpp

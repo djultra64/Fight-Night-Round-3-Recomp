@@ -3,7 +3,7 @@ Work: djultra64. Generate C++23 source; no GPU implementation is mocked above cr
 """
 from pathlib import Path
 import sys
-from pipeline_completion_fixture import extract, PREFIX
+from pipeline_completion_fixture import extract, diagnostics_prefix, PREFIX
 
 
 def generate(sdk):
@@ -16,7 +16,7 @@ def generate(sdk):
                   'void VulkanPipelineCache::GetPipelineAndLayoutByHandle(')
     prefix = PREFIX.replace('struct VulkanPipelineCache {', EXTRA + '\nstruct VulkanPipelineCache {')
     prefix = prefix.replace(' mutable std::atomic<uint64_t>', MEMBERS + '\n mutable std::atomic<uint64_t>', 1)
-    return prefix + '\n'.join(extract(source, s) for s in signatures) + TEST
+    return diagnostics_prefix(sdk) + prefix + '\n'.join(extract(source, s) for s in signatures) + TEST
 
 EXTRA = r'''
 #include <cassert>

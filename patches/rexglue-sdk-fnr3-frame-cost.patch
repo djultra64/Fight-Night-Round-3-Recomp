@@ -1,0 +1,201 @@
+--- a/src/graphics/plugin_main.cpp
++++ b/src/graphics/plugin_main.cpp
+@@ -19,6 +19,19 @@
+ #endif
+ #if REX_HAS_VULKAN
+ #include <rex/graphics/vulkan/graphics_system.h>
++#include <rex/graphics/vulkan/fnr3_frame_cost.h>
++#endif
++
++// FNR3 optional diagnostics, work: djultra64. These exports execute inside
++// the plugin; no recorder state is duplicated in the host executable.
++#if REX_HAS_VULKAN && defined(_WIN32)
++extern "C" REX_GPU_PLUGIN_EXPORT uint32_t Fnr3FrameCostStartV1(
++    const wchar_t* output, uint32_t capacity, uint32_t thread_cpu) noexcept {
++  return rex::graphics::vulkan::fnr3_cost::Start(output, capacity, thread_cpu);
++}
++extern "C" REX_GPU_PLUGIN_EXPORT uint32_t Fnr3FrameCostStopV1() noexcept {
++  return rex::graphics::vulkan::fnr3_cost::StopAndExport();
++}
+ #endif
+ 
+ extern "C" REX_GPU_PLUGIN_EXPORT uint32_t rex_gpu_abi_version(void) {
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -41,6 +41,7 @@
+ #include <rex/graphics/registers.h>
+ #include <rex/graphics/vulkan/command_processor.h>
+ #include <rex/graphics/vulkan/fnr3_readback_buffer_range.h>
++#include <rex/graphics/vulkan/fnr3_frame_cost.h>
+ #include <rex/graphics/vulkan/pipeline_cache.h>
+ #include <rex/graphics/vulkan/render_target_cache.h>
+ #include <rex/graphics/vulkan/shader.h>
+@@ -4975,6 +4976,7 @@
+ }
+ 
+ void VulkanCommandProcessor::CheckSubmissionFenceAndDeviceLoss(uint64_t await_submission) {
++  fnr3_cost::Scope cost(fnr3_cost::Stage::kFenceCheck, GetCurrentSubmission(), frame_current_);
+   // Only report once, no need to retry a wait that won't succeed anyway.
+   if (device_lost_) {
+     return;
+@@ -5001,9 +5003,13 @@
+     // defined by vkQueueSubmit additionally include in the first
+     // synchronization scope all commands that occur earlier in submission
+     // order."
++    fnr3_cost::Scope wait_cost(fnr3_cost::Stage::kFenceWait, await_submission, frame_current_);
+     VkResult wait_result =
+         dfn.vkWaitForFences(device, uint32_t(await_submission - submission_completed_),
+                             submissions_in_flight_fences_.data(), VK_TRUE, UINT64_MAX);
++    wait_cost.Result(int32_t(wait_result));
++    wait_cost.Items(await_submission - submission_completed_);
++    wait_cost.Finish();
+     if (wait_result == VK_SUCCESS) {
+       fences_awaited += await_submission - submission_completed_;
+     } else {
+@@ -5018,19 +5024,30 @@
+   // Check how far into the submissions the GPU currently is, in order because
+   // submission themselves can be executed out of order, but Xenia serializes
+   // that for simplicity.
+-  while (fences_awaited < fences_total) {
+-    VkResult fence_status =
+-        dfn.vkWaitForFences(device, 1, &submissions_in_flight_fences_[fences_awaited], VK_TRUE, 0);
+-    if (fence_status != VK_SUCCESS) {
+-      if (fence_status == VK_ERROR_DEVICE_LOST) {
+-        device_lost_ = true;
++  if (fences_awaited < fences_total) {
++    fnr3_cost::Scope poll_cost(fnr3_cost::Stage::kFencePoll,
++                              submission_completed_ + fences_awaited + 1, frame_current_);
++    size_t poll_count = 0;
++    while (fences_awaited < fences_total) {
++      VkResult fence_status =
++          dfn.vkWaitForFences(device, 1, &submissions_in_flight_fences_[fences_awaited], VK_TRUE, 0);
++      ++poll_count;
++      poll_cost.Result(int32_t(fence_status));
++      if (fence_status != VK_SUCCESS) {
++        if (fence_status == VK_ERROR_DEVICE_LOST) {
++          device_lost_ = true;
++        }
++        break;
+       }
+-      break;
++      ++fences_awaited;
+     }
+-    ++fences_awaited;
++    poll_cost.Items(poll_count);
+   }
+   if (device_lost_) {
+     if (graphics_system_) {
++      cost.Result(int32_t(VK_ERROR_DEVICE_LOST));
++      cost.Finish();
++      fnr3_cost::RescueDeviceLoss(fnr3_cost::FailureCause::kFenceDeviceLost);
+       graphics_system_->OnHostGpuLossFromAnyThread(true);
+     }
+     return;
+@@ -5048,6 +5065,11 @@
+   submissions_in_flight_fences_.erase(submissions_in_flight_fences_.cbegin(),
+                                       submissions_in_flight_fences_awaited_end);
+   submission_completed_ += fences_awaited;
++  {
++    // CPU observation of a completed range, NOT a GPU timestamp or duration.
++    fnr3_cost::Scope observed(fnr3_cost::Stage::kFenceObserved, submission_completed_, frame_current_);
++    observed.Items(fences_awaited);
++  }
+ 
+   // Reclaim semaphores.
+   while (!submissions_in_flight_semaphores_.empty()) {
+@@ -5138,6 +5160,8 @@
+     return true;
+   }
+ 
++  fnr3_cost::Scope cost(fnr3_cost::Stage::kBeginSubmission, GetCurrentSubmission(), frame_current_);
++
+   // Check the fence - needed for all kinds of submissions (to reclaim transient
+   // resources early) and specifically for frames (not to queue too many), and
+   // await the availability of the current frame. Also check whether the device
+@@ -5263,6 +5287,7 @@
+ }
+ 
+ bool VulkanCommandProcessor::EndSubmission(bool is_swap) {
++  fnr3_cost::Scope cost(fnr3_cost::Stage::kEndSubmission, GetCurrentSubmission(), frame_current_);
+   const ui::vulkan::VulkanDevice* const vulkan_device = GetVulkanDevice();
+   const ui::vulkan::VulkanDevice::Functions& dfn = vulkan_device->functions();
+   const VkDevice device = vulkan_device->device();
+@@ -5418,7 +5443,10 @@
+       REXGPU_ERROR("Failed to begin a Vulkan command buffer");
+       return false;
+     }
+-    deferred_command_buffer_.Execute(command_buffer.buffer);
++    {
++      fnr3_cost::Scope execute_cost(fnr3_cost::Stage::kDeferredExecute, GetCurrentSubmission(), frame_current_);
++      deferred_command_buffer_.Execute(command_buffer.buffer);
++    }
+     if (dfn.vkEndCommandBuffer(command_buffer.buffer) != VK_SUCCESS) {
+       REXGPU_ERROR("Failed to end a Vulkan command buffer");
+       return false;
+@@ -5448,15 +5476,22 @@
+     }
+     VkResult submit_result;
+     {
++      fnr3_cost::Scope acquire_cost(fnr3_cost::Stage::kQueueAcquire, GetCurrentSubmission(), frame_current_);
+       ui::vulkan::VulkanDevice::Queue::Acquisition queue_acquisition =
+           vulkan_device->AcquireQueue(vulkan_device->queue_family_graphics_compute(), 0);
++      acquire_cost.Finish();
++      fnr3_cost::Scope submit_cost(fnr3_cost::Stage::kQueueSubmit, GetCurrentSubmission(), frame_current_);
+       submit_result = dfn.vkQueueSubmit(queue_acquisition.queue(), 1, &submit_info, fence);
++      submit_cost.Result(int32_t(submit_result));
+     }
+     if (submit_result != VK_SUCCESS) {
+       REXGPU_ERROR("Failed to submit a Vulkan command buffer");
+       if (submit_result == VK_ERROR_DEVICE_LOST && !device_lost_) {
+         device_lost_ = true;
+         if (graphics_system_) {
++          cost.Result(int32_t(submit_result));
++          cost.Finish();
++          fnr3_cost::RescueDeviceLoss(fnr3_cost::FailureCause::kQueueSubmitDeviceLost);
+           graphics_system_->OnHostGpuLossFromAnyThread(true);
+         }
+       }
+--- a/src/graphics/vulkan/pipeline_cache.cpp
++++ b/src/graphics/vulkan/pipeline_cache.cpp
+@@ -42,6 +42,7 @@
+ #include <rex/graphics/util/draw.h>
+ #include <rex/graphics/vulkan/command_processor.h>
+ #include <rex/graphics/vulkan/pipeline_cache.h>
++#include <rex/graphics/vulkan/fnr3_frame_cost.h>
+ #include <rex/graphics/vulkan/shader.h>
+ #include <rex/graphics/xenos.h>
+ #include <rex/hash.h>
+@@ -895,6 +896,8 @@
+   }
+   if (wait) {
+     creation_request_cond_.notify_all();
++    // Cache clearing can call the drain outside a submission context.
++    fnr3_cost::Scope wait_cost(fnr3_cost::Stage::kDrainPipelineWait, 0, 0);
+     rex::thread::Wait(creation_completion_event_.get(), false);
+   }
+ }
+@@ -1165,6 +1168,8 @@
+     reg::RB_DEPTHCONTROL normalized_depth_control, uint32_t normalized_color_mask,
+     VulkanRenderTargetCache::RenderPassKey render_pass_key, VkPipeline& pipeline_out,
+     const PipelineLayoutProvider*& pipeline_layout_out, void** pipeline_handle_out) {
++  fnr3_cost::Scope cost(fnr3_cost::Stage::kConfigurePipeline,
++                        command_processor_.GetCurrentSubmission(), command_processor_.GetCurrentFrame());
+ #if XE_GPU_FINE_GRAINED_DRAW_SCOPES
+   SCOPE_profile_cpu_f("gpu");
+ #endif  // XE_GPU_FINE_GRAINED_DRAW_SCOPES
+@@ -1321,11 +1326,15 @@
+   const auto* pipeline = reinterpret_cast<const Pipeline*>(handle);
+   auto status = pipeline->creation_status.load(std::memory_order_acquire);
+   if (status == CreationStatus::kPending && REXCVAR_GET(vulkan_complete_draws)) {
++    fnr3_cost::Scope wait_cost(fnr3_cost::Stage::kRequiredPipelineWait,
++                              command_processor_.GetCurrentSubmission(), command_processor_.GetCurrentFrame());
+     const auto started = std::chrono::steady_clock::now();
+     do {
+       pipeline->creation_status.wait(CreationStatus::kPending, std::memory_order_acquire);
+       status = pipeline->creation_status.load(std::memory_order_acquire);
+     } while (status == CreationStatus::kPending);
++    wait_cost.Result(int32_t(status));
++    wait_cost.Finish();
+     pipeline_wait_count_.fetch_add(1, std::memory_order_relaxed);
+     pipeline_wait_microseconds_.fetch_add(uint64_t(std::chrono::duration_cast<std::chrono::microseconds>(
+         std::chrono::steady_clock::now() - started).count()), std::memory_order_relaxed);

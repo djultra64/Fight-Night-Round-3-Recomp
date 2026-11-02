@@ -1,0 +1,18 @@
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -3492,11 +3492,12 @@
+ 
+   VkDeviceMemory new_scratch_buffer_memory;
+   VkBuffer new_scratch_buffer;
+-  // VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT for
+-  // texture loading.
++  // Texture loading needs transfer source and storage usage. Memexporting
++  // guest DMA draws also snapshot into this buffer and bind it as indices.
+   if (!ui::vulkan::util::CreateDedicatedAllocationBuffer(
+           vulkan_device, size,
+-          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_STORAGE_BUFFER_BIT,
++          VK_BUFFER_USAGE_TRANSFER_SRC_BIT | VK_BUFFER_USAGE_TRANSFER_DST_BIT |
++              VK_BUFFER_USAGE_STORAGE_BUFFER_BIT | VK_BUFFER_USAGE_INDEX_BUFFER_BIT,
+           ui::vulkan::util::MemoryPurpose::kDeviceLocal, new_scratch_buffer,
+           new_scratch_buffer_memory)) {
+     REXGPU_ERROR("VulkanCommandProcessor: Failed to create a {} MB scratch GPU buffer", size >> 20);

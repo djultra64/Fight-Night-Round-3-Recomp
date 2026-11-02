@@ -37,7 +37,7 @@ struct FrameTimeOptions {
   std::filesystem::path output;  // empty disables tracing (the default)
   std::string cache_state = "unknown";  // cold, warm, unknown
   std::string scene = "unfiltered";
-  size_t capacity = 54000;       // 30 minutes at 30 submissions/second
+  size_t capacity = 216000;      // One hour at 60 submissions/second, including navigation.
 };
 // Call only before guest launch. Existing enabled traces must first be flushed.
 // Validation/allocation occur here; errors are returned without starting capture.

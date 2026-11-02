@@ -16,7 +16,7 @@ import tarfile
 
 ROOT = Path(__file__).resolve().parents[1]
 PRODUCT = 'Fight Night Round 3 Recomp'
-VERSION = '1.0.3'
+VERSION = '1.0.4'
 EXTRACT_XISO_PIN = '3f5b62cfe68f000b0e3c8a30104973f3a297948e'
 PIN = 'f5337cdc947ff6d4c4196737e2c807a48f2a1fc2'
 PATCHES = (
@@ -49,6 +49,17 @@ PATCHES = (
     'rexglue-sdk-vulkan-complete-draws.patch',
     'rexglue-sdk-command-dispatch-sync.patch',
     'rexglue-sdk-optional-log-file.patch',
+    'rexglue-sdk-fnr3-frame-cost.patch',
+    'rexglue-sdk-present-semaphore-per-image.patch',
+    'rexglue-sdk-vulkan-submission-completion.patch',
+    'rexglue-sdk-vulkan-readback-retirement.patch',
+    'rexglue-sdk-vulkan-rendering-attachment-headers.patch',
+    'rexglue-sdk-vulkan-scratch-buffer-usage.patch',
+    'rexglue-sdk-vulkan-edram-dump-ordering.patch',
+    'rexglue-sdk-vulkan-presenter-resource-retirement.patch',
+    'rexglue-sdk-vulkan-dynamic-attachment-dependency.patch',
+    'rexglue-sdk-vulkan-vertex-residency.patch',
+    'rexglue-sdk-xma-late-continuation.patch',
 )
 TARGETS = {'Linux': 'linux-amd64', 'Windows': 'win-amd64'}
 MSVC_REDISTRIBUTABLES = frozenset({
@@ -137,7 +148,8 @@ def prepare(target):
     seed = {'sdk_commit': PIN, 'patches': patch_hashes,
             'patch_application': 'explicit-directory-v1',
             'pipeline_cache_file': sha(ROOT / 'tools/xenos-optimized/pipeline_cache_file.h'),
-            'readback_buffer_range': sha(ROOT / 'tools/xenos-optimized/readback_buffer_range.h')}
+            'readback_buffer_range': sha(ROOT / 'tools/xenos-optimized/readback_buffer_range.h'),
+            'fnr3_frame_cost': sha(ROOT / 'tools/profiling/fnr3_frame_cost.h')}
     marker = home / 'sdk-prepared.json'
     if sdk.exists():
         if not marker.is_file() or json.loads(marker.read_text()) != seed:
@@ -187,6 +199,8 @@ def prepare(target):
                      temporary / 'include/rex/graphics/vulkan/pipeline_cache_file.h')
         shutil.copy2(ROOT / 'tools/xenos-optimized/readback_buffer_range.h',
                      temporary / 'include/rex/graphics/vulkan/fnr3_readback_buffer_range.h')
+        shutil.copy2(ROOT / 'tools/profiling/fnr3_frame_cost.h',
+                     temporary / 'include/rex/graphics/vulkan/fnr3_frame_cost.h')
         # Hash all source inputs before compilation (including submodules).
         write_json(home / 'sdk-inputs.json', {'submodules': submodules,
                    'files': files_manifest(temporary, source=True)})

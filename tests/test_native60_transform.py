@@ -107,5 +107,63 @@ class TransformTests(unittest.TestCase):
                     native60.transform(source, source)
 
 
+
+class NativeCanvasTransforms(unittest.TestCase):
+    def registered(self, address):
+        self.assertIn(address, native60.TARGETS)
+
+    def test_native_width_keeps_hd_assets(self):
+        self.registered('82315B70')
+        body='\tif (!ctx.cr6.eq) goto loc_82315C40;'
+        patched=native60.patch_function('82315B70',body)
+        self.assertIn('ctx.cr6.lt',patched)
+        with self.assertRaises(ValueError):
+            native60.patch_function('82315B70',body+body)
+
+    def test_apt_only_replaces_two_numerators(self):
+        self.registered('823042B0')
+        body='\ttemp.u32 = REX_LOAD_U32(ctx.r11.u32 + -4);\n\ttemp.u32 = REX_LOAD_U32(ctx.r11.u32 + 0);'
+        patched=native60.patch_function('823042B0',body)
+        self.assertIn('0x82842B54',patched)
+        self.assertIn('0x82842B58',patched)
+        with self.assertRaises(ValueError):
+            native60.patch_function('823042B0',body.replace(' + -4',' + -8'))
+
+    def test_font_transforms_local_matrix_before_submission(self):
+        self.registered('8240A628')
+        body='\t// lbz r7,93(r11)\n\treturn;'
+        patched=native60.patch_function('8240A628',body)
+        self.assertLess(patched.index('Fnr3ScaleEngineFontMatrix'),patched.index('// lbz'))
+        with self.assertRaises(ValueError):
+            native60.patch_function('8240A628',body+body)
+
+    def test_engine_primitive_coordinates_scaled_before_both_encodings(self):
+        self.registered('82236220')
+        body=('\tREX_FUNC_PROLOGUE();\n'
+              '\t// beq cr6,0x82236448\n'
+              '\t// fcmpu cr6,f0,f12\n')
+        patched=native60.patch_function('82236220',body)
+        self.assertEqual(patched.count('Fnr3EnginePrimitiveScale'),1)
+        self.assertIn('ctx.f0.f64 * fnr3_scale[0]',patched)
+        self.assertIn('ctx.f13.f64 * fnr3_scale[1]',patched)
+        self.assertIn('ctx.f13.f64 * fnr3_scale[0]',patched)
+        self.assertIn('ctx.f0.f64 * fnr3_scale[1]',patched)
+        with self.assertRaises(ValueError):
+            native60.patch_function('82236220',body.replace('0x82236448','0x8223644C'))
+        with self.assertRaises(ValueError):
+            native60.patch_function('82236220',body+body)
+
+    def test_bloom_scopes_only_five_owner_draws(self):
+        self.registered('82248450')
+        calls=[('822486A0',40),('82248808',44),('822489F8',44),('82248BC0',44),('82248C90',40)]
+        body='\n'.join('\tctx.lr = 0x'+lr+';\n\tsub_82379358(ctx, base);' for lr,_ in calls)
+        patched=native60.patch_function('82248450',body)
+        self.assertEqual(patched.count('Fnr3DrawBloom'),5)
+        self.assertEqual(patched.count('ctx.r27.u32 + 40'),2)
+        self.assertEqual(patched.count('ctx.r27.u32 + 44'),3)
+        with self.assertRaises(ValueError):
+            native60.patch_function('82248450',body.replace('82248808','8224880C'))
+
+
 if __name__ == '__main__':
     unittest.main()

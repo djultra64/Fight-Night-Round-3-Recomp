@@ -1,0 +1,12 @@
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -6138,6 +6138,9 @@
+   }
+   // Gather all needed barriers and info needed to sort the invocations.
+   UseEdramBuffer(EdramBufferUsage::kComputeWrite);
++  // A previous dump may have survived an aborted resolve without a reader.
++  // Commit its unordered writes before another potentially overlapping dump.
++  CommitEdramBufferShaderWrites();
+   dump_invocations_.clear();
+   dump_invocations_.reserve(dump_rectangles_.size());
+   uint32_t rt_sort_index = 0;

@@ -1,6 +1,7 @@
 // Original-rate resolution port policy. Project work: djultra64.
 #pragma once
 #include <array>
+#include <cstdint>
 #include <stdexcept>
 #include <string>
 #include <string_view>
@@ -10,15 +11,24 @@ namespace fnr3::port {
 struct Resolution {
   std::string_view id;
   unsigned width, height, scale;
+  constexpr unsigned GuestWidth() const { return width / scale; }
+  constexpr unsigned GuestHeight() const { return height / scale; }
+  // Eight padded 32-bit guest planes grow with the base canvas. Keep the
+  // original allocator margin, rounded conservatively in 16 MiB steps.
+  constexpr unsigned ExtraGuestMemoryMiB() const {
+    const uint64_t original = uint64_t(1280) * 736 * 32;
+    const uint64_t required = uint64_t(GuestWidth()) *
+        ((GuestHeight() + 31u) & ~31u) * 32;
+    return required <= original ? 0u :
+        unsigned((required - original + (16u << 20) - 1) / (16u << 20)) * 16u;
+  }
 };
 inline constexpr auto Resolutions() {
-  // The pinned Xenos SDK supports integer render scales. Intermediate display
-  // sizes use the next integer render size and downsample; no fractional GPU
-  // scale is claimed. The product presents one resolution setting.
+  // Use exact guest canvases for intermediate presets; SDK scales stay integer.
   return std::array{
-      Resolution{"720p", 1280, 720, 1},   Resolution{"900p", 1600, 900, 2},
-      Resolution{"1080p", 1920, 1080, 2}, Resolution{"1440p", 2560, 1440, 2},
-      Resolution{"1800p", 3200, 1800, 3}, Resolution{"2160p", 3840, 2160, 3}};
+      Resolution{"720p", 1280, 720, 1},   Resolution{"900p", 1600, 900, 1},
+      Resolution{"1080p", 1920, 1080, 1}, Resolution{"1440p", 2560, 1440, 2},
+      Resolution{"1800p", 3200, 1800, 2}, Resolution{"2160p", 3840, 2160, 3}};
 }
 struct GraphicsSettings {
   std::string resolution = "720p", post_effect = "none", texture_filter = "4x";

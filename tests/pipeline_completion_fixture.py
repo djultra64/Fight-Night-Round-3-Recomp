@@ -19,7 +19,15 @@ def extract(text, signature):
 def generate(sdk):
     source = (sdk / 'src/graphics/vulkan/pipeline_cache.cpp').read_text()
     lookup = extract(source, 'void VulkanPipelineCache::GetPipelineAndLayoutByHandle(')
-    return PREFIX + lookup + SUFFIX
+    return diagnostics_prefix(sdk) + PREFIX + lookup + SUFFIX
+
+
+def diagnostics_prefix(sdk):
+    header = sdk / 'include/rex/graphics/vulkan/fnr3_frame_cost.h'
+    if not header.exists():
+        return ''  # The same fixture can still exercise the 29-patch reference.
+    return (f'#include "{header.resolve().as_posix()}"\n'
+            'namespace fnr3_cost = rex::graphics::vulkan::fnr3_cost;\n')
 
 
 PREFIX = r'''
@@ -39,6 +47,10 @@ bool cfg_vulkan_complete_draws = true;
 #define REXCVAR_GET(x) cfg_##x
 #define REXGPU_INFO(...) do {} while (0)
 struct VulkanPipelineCache {
+ struct CommandProcessor {
+   uint64_t GetCurrentSubmission() const { return 1; }
+   uint64_t GetCurrentFrame() const { return 1; }
+ } command_processor_;
  struct PipelineLayoutProvider { int id; };
  enum class CreationStatus { kEmpty, kPending, kReady, kFailed };
  struct Pipeline {

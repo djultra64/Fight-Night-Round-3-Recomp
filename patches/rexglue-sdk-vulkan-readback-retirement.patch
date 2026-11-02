@@ -1,0 +1,16 @@
+--- a/src/graphics/vulkan/command_processor.cpp
++++ b/src/graphics/vulkan/command_processor.cpp
+@@ -4737,7 +4737,12 @@
+     ReadbackBuffer& readback = it->second;
+     bool evict =
+         buffer_map.size() > kMaxReadbackBuffers || readback.last_used_frame < eviction_frame_floor;
+-    if (!evict) {
++    // Cache pressure and age don't prove GPU completion. Either slot may
++    // still be referenced by a pending or currently recorded submission.
++    // Keep recent frame references too, and reconsider on the next frame.
++    if (!evict || readback.last_used_frame > frame_completed_ ||
++        readback.submission_written[0] > submission_completed_ ||
++        readback.submission_written[1] > submission_completed_) {
+       ++it;
+       continue;
+     }

@@ -8,7 +8,8 @@ import argparse
 from pathlib import Path
 import re
 
-TARGETS = ('8226E838', '82265A20', '82223260', '821A3D78', '821A3E58', '822552E8')
+TARGETS = ('8226E838', '82265A20', '82223260', '821A3D78', '821A3E58', '822552E8',
+           '82315B70', '823042B0', '8240A628', '82248450', '82236220')
 FUNCTION = re.compile(r'^DEFINE_REX_FUNC\(sub_([0-9A-F]{8})\) \{', re.MULTILINE)
 
 
@@ -27,6 +28,36 @@ def before_epilogue(body, call, stack_size):
 def patch_function(address, body):
     if 'Fnr3' in body or 'fnr3_' in body:
         raise ValueError(f'{address}: input already patched or instrumented; regenerate original code')
+    if address == '82236220':
+        body = replace_exact(body, '\tREX_FUNC_PROLOGUE();',
+            '\tREX_FUNC_PROLOGUE();\n\tconst auto fnr3_scale = Fnr3EnginePrimitiveScale(base);')
+        # Scale final positions only: shared geometry, offsets, UVs and Z stay intact.
+        body = replace_exact(body, '\t// beq cr6,0x82236448',
+            '\tctx.f0.f64 = double(float(ctx.f0.f64 * fnr3_scale[0]));\n'
+            '\tctx.f13.f64 = double(float(ctx.f13.f64 * fnr3_scale[1]));\n'
+            '\t// beq cr6,0x82236448')
+        return replace_exact(body, '\t// fcmpu cr6,f0,f12',
+            '\tctx.f13.f64 = double(float(ctx.f13.f64 * fnr3_scale[0]));\n'
+            '\tctx.f0.f64 = double(float(ctx.f0.f64 * fnr3_scale[1]));\n'
+            '\t// fcmpu cr6,f0,f12')
+    if address == '82315B70':
+        return replace_exact(body, '\tif (!ctx.cr6.eq) goto loc_82315C40;',
+                             '\tif (ctx.cr6.lt) goto loc_82315C40;')
+    if address == '823042B0':
+        body = replace_exact(body, '\ttemp.u32 = REX_LOAD_U32(ctx.r11.u32 + -4);',
+                             '\ttemp.u32 = REX_LOAD_U32(0x82842B54);')
+        return replace_exact(body, '\ttemp.u32 = REX_LOAD_U32(ctx.r11.u32 + 0);',
+                             '\ttemp.u32 = REX_LOAD_U32(0x82842B58);')
+    if address == '8240A628':
+        return replace_exact(body, '\t// lbz r7,93(r11)',
+                             '\tFnr3ScaleEngineFontMatrix(ctx, base);\n\t// lbz r7,93(r11)')
+    if address == '82248450':
+        for lr, texture in (('822486A0', 40), ('82248808', 44), ('822489F8', 44),
+                            ('82248BC0', 44), ('82248C90', 40)):
+            anchor = '\tctx.lr = 0x' + lr + ';\n\tsub_82379358(ctx, base);'
+            body = replace_exact(body, anchor, '\tctx.lr = 0x' + lr + ';\n' +
+                '\tFnr3DrawBloom(ctx, base, REX_LOAD_U32(ctx.r27.u32 + ' + str(texture) + '));')
+        return body
     if address == '8226E838':
         # Restore before stock phase selection, then replay override after it.
         body = replace_exact(body, '\tREX_FUNC_PROLOGUE();',
@@ -112,7 +143,7 @@ def transform(source, output):
                 text = text[:start] + patch_function(address, text[start:end]) + text[end:]
             except ValueError as error:
                 raise ValueError(f'{name} / {address}: {error}') from error
-        transformed[name] = '#include "port_timing.h"\n' + text
+        transformed[name] = '#include "port_timing.h"\n#include "port_resolution.h"\n' + text
     output.mkdir(parents=True, exist_ok=True)
     for name, text in transformed.items():
         path = output / name

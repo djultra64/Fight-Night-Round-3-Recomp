@@ -1,8 +1,10 @@
+![Actively maintained](https://img.shields.io/badge/status-actively%20maintained-brightgreen)
+
 # Fight Night Round 3 Recomp
 
-**Version 1.0.3 · Project work by [djultra64](https://github.com/djultra64)**
+**Version 1.0.4 · Project work by [djultra64](https://github.com/djultra64)**
 
-Version 1.0.3 improves startup, rendering consistency and desktop scaling, and fixes Options/profile saving behavior. See the [1.0.3 release notes](docs/beta/release-notes-1.0.3.md).
+Version 1.0.4 aligns internal rendering with the selected resolution, corrects fullscreen video and UI placement, and includes targeted graphics, pause-menu and audio stability fixes. See the [1.0.4 release notes](docs/beta/release-notes-1.0.4.md).
 
 An unofficial PC recompilation of Fight Night Round 3 for Xbox 360, built with ReXGlue and the Xenos renderer: Vulkan on Linux and Windows. Version 1.0 brings native 60 FPS gameplay while preserving the original gameplay speed, with configurable resolution and a native settings interface.
 
@@ -10,11 +12,29 @@ You must supply your own supported USA game data. No disc images, XEX executable
 
 ## Release status
 
-Version 1.0.3 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
+Version 1.0.4 is a regular release with Linux and Windows Vulkan runtime packages and source build support. Intermittent loading, text and audio issues remain; complete game compatibility and uninterrupted play are not guaranteed.
 
 Read the [known issues](docs/beta/known-issues.md) before installing. Downloads are available through [GitHub Releases](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases).
 
-## New in 1.0.3
+## Planned features / next steps
+
+1. Native launcher window with an **Add to Steam** button.
+2. Full career testing.
+3. Online play feasibility research.
+4. In-depth investigation of reported crashes that I have not been able to reproduce on my Windows PC or Linux machine.
+
+These are planned areas of work; online play is not currently supported.
+
+## New in 1.0.4
+
+- Resolution presets now match their internal rendering dimensions, including native 900p and 1080p.
+- Corrected intro-video sizing, menu text, HUD bars, demo-mode text and bloom/scissor alignment for native canvases.
+- Rebalanced the physical-memory budget to fix a reproduced Windows pause-menu freeze at native 1080p.
+- Added targeted Vulkan synchronization, resource-lifetime and audio continuation fixes.
+
+Full career coverage and sustained-performance validation remain ongoing. Repeated opponent previews can still stutter; see the [known issues](docs/beta/known-issues.md).
+
+## Previous improvements in 1.0.3
 
 Window resolution now uses physical pixels across desktop scaling and monitor changes. Draws wait for the Vulkan pipeline they need, while cached pipelines prepare in the background.
 
@@ -32,7 +52,7 @@ Thanks to **fransisigoswho** for reporting the startup, missing rendering and de
 - Automatic prompts for the last active device, Xbox/PlayStation/Nintendo Switch families, manual family selection, and 14 optional action bindings.
 - Local preparation of the native frontend and controller glyphs from verified user-owned assets.
 
-Rendering uses integer scales and downsamples intermediate resolutions: 900p and 1080p use the same 2× rendering tier as 1440p. A lower output resolution within that tier may not reduce GPU cost. Original MSAA is shown as read-only.
+Each preset matches its internal rendering resolution: 720p = 1280×720, 900p = 1600×900, 1080p = 1920×1080, 1440p = 2560×1440, 1800p = 3200×1800 and 2160p = 3840×2160. Original MSAA is shown as read-only.
 
 Gameplay advances at the selected 30 or 60 FPS cadence with phase-specific timing; intros retain their stock 30 FPS cadence. Crowd animation uses fractional advancement, and replays use elapsed time to preserve their slow-motion behavior.
 
@@ -40,7 +60,7 @@ A steady 60 FPS requires enough CPU/GPU headroom. Cached pipeline prewarming red
 
 ## Get started
 
-[Download version 1.0.3](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.3): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
+[Download version 1.0.4](https://github.com/djultra64/Fight-Night-Round-3-Recomp/releases/tag/v1.0.4): choose the Linux archive or Windows ZIP, extract it into a new folder, then run the supplied launcher.
 
 Linux:
 
@@ -83,6 +103,7 @@ PRs and forks improving frame pacing, performance or correct higher frame rates 
 - [Controls and controller prompts](docs/beta/controls.md)
 - [Known issues](docs/beta/known-issues.md)
 - [Troubleshooting](docs/beta/troubleshooting.md)
+- [Version 1.0.4 release notes](docs/beta/release-notes-1.0.4.md)
 - [Version 1.0.3 release notes](docs/beta/release-notes-1.0.3.md)
 - [Version 1.0.2 release notes](docs/beta/release-notes-1.0.2.md)
 - [Version 1.0.1 release notes](docs/beta/release-notes-1.0.1.md)

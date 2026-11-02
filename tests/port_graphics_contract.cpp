@@ -43,7 +43,11 @@ int main() {
   for (const auto &resolution : Resolutions()) {
     const auto &p = resolution;
     assert(p.width * 9 == p.height * 16);
-    assert(p.scale * 1280 >= p.width && p.scale * 720 >= p.height);
+    // Integer SDK scales must multiply the exact selected guest canvas,
+    // never round 900/1080/1800 up to the next 720p multiple.
+    const unsigned expected_scale = p.id == "1440p" || p.id == "1800p" ? 2u :
+                                    p.id == "2160p" ? 3u : 1u;
+    assert(p.scale == expected_scale);
   }
   unsigned rejected = 0;
   for (auto bad : {GraphicsSettings{"1080p;quit", "none", "4x"},

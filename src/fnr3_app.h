@@ -10,6 +10,7 @@
 #include "port_input.h"
 #include "port_menu.h"
 #include "port_frame_times.h"
+#include "port_frame_cost.h"
 #include <rex/cvar.h>
 #include <rex/ui/window.h>
 #include <rex/ui/window_listener.h>
@@ -28,6 +29,7 @@ class Fnr3App : public rex::ReXApp {
 public:
   using rex::ReXApp::ReXApp;
   ~Fnr3App() override {
+    fnr3::port::FlushFrameCost();
     std::string error;
     if (!fnr3::port::FlushFrameTimes(&error))
       REXLOG_ERROR("FNR3: frame trace could not be saved: {}", error);
@@ -35,12 +37,12 @@ public:
 
   static std::unique_ptr<rex::ui::WindowedApp>
   Create(rex::ui::WindowedAppContext &ctx) {
-    return std::unique_ptr<Fnr3App>(new Fnr3App(ctx, "Fight Night Round 3 Recomp v1.0.3", PPCImageConfig));
+    return std::unique_ptr<Fnr3App>(new Fnr3App(ctx, "Fight Night Round 3 Recomp v1.0.4", PPCImageConfig));
   }
 
   // Override virtual hooks for customization:
   void OnPostInitLogging() override {
-    REXLOG_INFO("FNR3: startup diagnostics; build 1.0.3, work djultra64");
+    REXLOG_INFO("FNR3: startup diagnostics; build 1.0.4, work djultra64");
 #if defined(_WIN32)
     // The launcher passes a distinct directory for every diagnostic attempt.
     if (const wchar_t* directory = _wgetenv(L"FNR3_DIAGNOSTICS_DIR")) {
@@ -126,6 +128,7 @@ public:
       trace.scene=rex::cvar::GetFlagByName("fnr3_trace_scene");
       std::string error;
       if(!fnr3::port::InitializeFrameTimes(trace,&error))throw std::runtime_error(error);
+      fnr3::port::InitializeFrameCost();
     }catch(const std::exception& e){
       REXLOG_ERROR("FNR3: port preflight failed: {}",e.what());
       rex::ui::ImGuiDialog::ShowMessageBox(imgui_drawer(),"Port setup failed",e.what());
@@ -140,6 +143,9 @@ public:
     ui_alive_->store(false);
     if(queue_)queue_->Shutdown();
     fnr3::port::ShutdownPortMenus();
+    // Freeze optional plugin capture before terminating guest threads. Never
+    // wait for Vulkan scopes; unfinished work is exported as incomplete.
+    fnr3::port::FlushFrameCost();
     if(runtime() && runtime()->kernel_state())runtime()->kernel_state()->TerminateTitle();
     OnShutdown();
     std::string error;

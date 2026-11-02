@@ -1,5 +1,15 @@
 # Changelog
 
+## 1.0.4
+
+- Match resolution presets to exact internal dimensions and correct fullscreen video, UI/HUD and bloom/scissor placement.
+- Fix the reproduced native-1080p Windows Pause allocation failure with balanced physical-memory budgets.
+- Add targeted Vulkan resource/synchronization and XMA audio-continuation fixes.
+- Add the actively-maintained badge and planned-features roadmap.
+- Keep career-preview stutters and incomplete validation documented.
+
+See the [1.0.4 release notes](docs/beta/release-notes-1.0.4.md).
+
 ## 1.0.3
 
 - Keep the selected window resolution in physical pixels across desktop scaling, display selection and window reopening.

@@ -1,0 +1,314 @@
+--- a/include/rex/audio/xma/context.h
++++ b/include/rex/audio/xma/context.h
+@@ -242,8 +242,7 @@
+   static int16_t GetPacketNumber(size_t size, size_t bit_offset);
+   static uint32_t GetCurrentInputBufferSize(XMA_CONTEXT_DATA* data);
+ 
+-  kPacketInfo GetPacketInfo(uint8_t* packet, uint32_t frame_offset,
+-                            bool next_packet_has_continuation);
++  kPacketInfo GetPacketInfo(uint8_t* packet, uint32_t frame_offset);
+   uint32_t GetAmountOfBitsToRead(uint32_t remaining_stream_bits, uint32_t frame_size);
+   const uint8_t* GetNextPacket(XMA_CONTEXT_DATA* data, uint32_t next_packet_index,
+                                uint32_t current_input_packet_count);
+@@ -251,7 +250,8 @@
+                                    uint32_t current_input_packet_count);
+   uint8_t* GetCurrentInputBuffer(XMA_CONTEXT_DATA* data);
+ 
+-  void Decode(XMA_CONTEXT_DATA* data);
++  enum class DecodeResult { kReady, kWaitingForInput };
++  DecodeResult Decode(XMA_CONTEXT_DATA* data);
+   void Consume(memory::RingBuffer* output_rb, const XMA_CONTEXT_DATA* data);
+   void UpdateLoopStatus(XMA_CONTEXT_DATA* data);
+   void ClearLocked(XMA_CONTEXT_DATA* data);
+@@ -281,6 +281,14 @@
+   AVCodec* av_codec_ = nullptr;
+   AVCodecContext* av_context_ = nullptr;
+   AVFrame* av_frame_ = nullptr;
++
++  // A consumed packet may be reused before its successor arrives. Retain the
++  // fragment independently, and wait for the expected double-buffer slot.
++  std::array<uint8_t, kBytesPerPacket> split_packet_{};
++  uint32_t split_packet_relative_offset_ = 0;
++  uint32_t split_packet_source_offset_ = 0;
++  uint8_t split_packet_next_buffer_ = 0;
++  bool split_packet_pending_ = false;
+ 
+   // Packet data buffer (two packets worth for split frame handling)
+   std::array<uint8_t, kBytesPerPacketData * 2> input_buffer_;
+--- a/src/audio/xma_context.cpp
++++ b/src/audio/xma_context.cpp
+@@ -137,12 +137,13 @@
+   }
+ 
+   while (remaining_subframe_blocks_in_output_buffer_ >= minimum_subframe_decode_count) {
+-    Decode(&data);
++    const DecodeResult decoded = Decode(&data);
+     Consume(&output_rb, &data);
+ 
+     // Exhausted input may still leave a decoded frame partially consumed.
+     // The guest cannot re-enable us until that PCM has reached the ring.
+-    if ((!data.IsAnyInputBufferValid() && current_frame_remaining_subframes_ == 0) ||
++    if (decoded == DecodeResult::kWaitingForInput ||
++        (!data.IsAnyInputBufferValid() && current_frame_remaining_subframes_ == 0) ||
+         data.error_status == 4) {
+       break;
+     }
+@@ -216,6 +217,10 @@
+   current_frame_remaining_subframes_ = 0;
+   loop_frame_output_limit_ = 0;
+   loop_start_skip_pending_ = false;
++  split_packet_pending_ = false;
++  split_packet_relative_offset_ = 0;
++  split_packet_source_offset_ = 0;
++  split_packet_next_buffer_ = 0;
+ }
+ 
+ void XmaContext::Disable() {
+@@ -352,8 +357,7 @@
+   return output_rb;
+ }
+ 
+-kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset,
+-                                     bool next_packet_has_continuation) {
++kPacketInfo XmaContext::GetPacketInfo(uint8_t* packet, uint32_t frame_offset) {
+   kPacketInfo packet_info = {};
+ 
+   const uint32_t first_frame_offset = xma::GetPacketFrameOffset(packet);
+@@ -367,11 +371,10 @@
+ 
+   while (true) {
+     if (stream.BitsRemaining() < kBitsPerFrameHeader) {
+-      // A following packet with continuation bits confirms that these last
+-      // bits start another frame, even though its length header is incomplete.
+-      // Count it so the preceding frame doesn't skip straight to the next
+-      // packet's first *new* frame and discard this split header.
+-      if (stream.BitsRemaining() && next_packet_has_continuation) {
++      // Reaching here after a frame's continuation bit means another frame
++      // begins in this packet. Its successor may not have arrived yet; do not
++      // discard a partial length header while waiting for that packet.
++      if (stream.BitsRemaining()) {
+         if (stream.offset_bits() == frame_offset) {
+           packet_info.current_frame_ = packet_info.frame_count_;
+           packet_info.current_frame_size_ = 0;
+@@ -544,61 +547,75 @@
+   return true;
+ }
+ 
+-void XmaContext::Decode(XMA_CONTEXT_DATA* data) {
++XmaContext::DecodeResult XmaContext::Decode(XMA_CONTEXT_DATA* data) {
+   SCOPE_profile_cpu_f("apu");
+ 
+   if (!data->IsAnyInputBufferValid()) {
+-    return;
++    return DecodeResult::kReady;
+   }
+ 
+   if (current_frame_remaining_subframes_ > 0) {
+-    return;
+-  }
+-
+-  if (!data->IsCurrentInputBufferValid()) {
++    return DecodeResult::kReady;
++  }
++
++  const bool completing_split = split_packet_pending_;
++  if (completing_split) {
++    // A refilled older slot is future input, not the continuation we need.
++    if (!data->IsInputBufferValid(split_packet_next_buffer_)) {
++      return DecodeResult::kWaitingForInput;
++    }
++    data->current_buffer = split_packet_next_buffer_;
++  }
++  if (!completing_split && !data->IsCurrentInputBufferValid()) {
+     SwapInputBuffer(data);
+     if (!data->IsCurrentInputBufferValid()) {
+-      return;
+-    }
+-  }
+-
+-  uint8_t* current_input_buffer = GetCurrentInputBuffer(data);
++      return DecodeResult::kReady;
++    }
++  }
++
++  uint8_t* current_input_buffer =
++      completing_split ? split_packet_.data() : GetCurrentInputBuffer(data);
+ 
+   input_buffer_.fill(0);
+ 
+   // Loop-end frame: decode it here (output limited to loop_subframe_end),
+   // jump to loop_start afterwards in the next-offset step.
++  const uint32_t source_frame_offset = completing_split
++      ? split_packet_source_offset_ : uint32_t(data->input_buffer_read_offset);
+   bool is_loop_end_frame = false;
+   if (data->loop_count > 0) {
+     const uint32_t loop_end = std::max(kBitsPerPacketHeader, data->loop_end);
+-    is_loop_end_frame = (data->input_buffer_read_offset == loop_end);
++    is_loop_end_frame = (source_frame_offset == loop_end);
+   }
+ 
+   if (!data->output_buffer_block_count) {
+     REXAPU_ERROR("XmaContext {}: Error - Received 0 for output_buffer_block_count!", id());
+-    return;
++    return DecodeResult::kReady;
+   }
+ 
+   if (data->input_buffer_read_offset < kBitsPerPacketHeader) {
+     data->input_buffer_read_offset = kBitsPerPacketHeader;
+   }
+ 
+-  const uint32_t current_input_size = GetCurrentInputBufferSize(data);
++  const uint32_t current_input_size =
++      completing_split ? kBytesPerPacket : GetCurrentInputBufferSize(data);
+   const uint32_t current_input_packet_count = current_input_size / kBytesPerPacket;
+ 
+-  const int16_t packet_index = GetPacketNumber(current_input_size, data->input_buffer_read_offset);
++  const int16_t packet_index = completing_split
++      ? 0 : GetPacketNumber(current_input_size, data->input_buffer_read_offset);
+ 
+   if (packet_index == -1) {
+     REXAPU_ERROR("XmaContext {}: Invalid packet index. Input read offset: {}", id(),
+                  static_cast<uint32_t>(data->input_buffer_read_offset));
+-    return;
++    return DecodeResult::kReady;
+   }
+ 
+   uint8_t* packet = current_input_buffer + (packet_index * kBytesPerPacket);
+   const uint32_t packet_first_frame_offset = xma::GetPacketFrameOffset(packet);
+-  uint32_t relative_offset = data->input_buffer_read_offset % kBitsPerPacket;
+-
+-  if (relative_offset < packet_first_frame_offset) {
++  uint32_t relative_offset = completing_split
++      ? split_packet_relative_offset_ : data->input_buffer_read_offset % kBitsPerPacket;
++
++  if (!completing_split && relative_offset < packet_first_frame_offset) {
+     data->input_buffer_read_offset = (packet_index * kBitsPerPacket) + packet_first_frame_offset;
+     relative_offset = packet_first_frame_offset;
+   }
+@@ -613,23 +630,34 @@
+       SwapInputBuffer(data);
+     }
+     data->input_buffer_read_offset = next_input_offset;
+-    return;
++    return DecodeResult::kReady;
+   }
+ 
+   const uint32_t packet_to_skip = skip_count + 1;
+   const uint32_t next_packet_index = packet_index + packet_to_skip;
+-  const uint8_t* following_packet =
+-      GetNextPacket(data, next_packet_index, current_input_packet_count);
+-  const bool has_continuation = following_packet &&
+-      xma::GetPacketFrameOffset(following_packet) > kBitsPerPacketHeader;
+-  kPacketInfo packet_info = GetPacketInfo(packet, relative_offset, has_continuation);
++  const uint8_t* following_packet = completing_split
++      ? GetCurrentInputBuffer(data)
++      : GetNextPacket(data, next_packet_index, current_input_packet_count);
++  kPacketInfo packet_info = GetPacketInfo(packet, relative_offset);
++  auto wait_for_following_packet = [&]() {
++    // Looping may revisit other positions of this input buffer. Keep ownership
++    // until the continuation is available; Work must yield rather than spin.
++    if (!data->loop_count && !completing_split) {
++      std::memcpy(split_packet_.data(), packet, kBytesPerPacket);
++      split_packet_relative_offset_ = relative_offset;
++      split_packet_source_offset_ = source_frame_offset;
++      split_packet_next_buffer_ = data->current_buffer ^ 1;
++      split_packet_pending_ = true;
++      SwapInputBuffer(data);
++    }
++    return DecodeResult::kWaitingForInput;
++  };
+ 
+   // Frame header split across packet boundary.
+   if (packet_info.current_frame_size_ == 0) {
+-    const uint8_t* next_packet = GetNextPacket(data, next_packet_index, current_input_packet_count);
++    const uint8_t* next_packet = following_packet;
+     if (!next_packet) {
+-      SwapInputBuffer(data);
+-      return;
++      return wait_for_following_packet();
+     }
+     std::memcpy(input_buffer_.data(), packet + kBytesPerPacketHeader, kBytesPerPacketData);
+     std::memcpy(input_buffer_.data() + kBytesPerPacketData, next_packet + kBytesPerPacketHeader,
+@@ -641,13 +669,13 @@
+     uint64_t frame_size = combined.Peek(kBitsPerFrameHeader);
+     if (frame_size == xma::kMaxFrameLength) {
+       data->error_status = 4;
+-      return;
++      return DecodeResult::kReady;
+     }
+     packet_info.current_frame_size_ = static_cast<uint32_t>(frame_size);
+   }
+ 
+   BitStream stream(current_input_buffer, (packet_index + 1) * kBitsPerPacket);
+-  stream.SetOffset(data->input_buffer_read_offset);
++  stream.SetOffset(uint32_t(packet_index) * kBitsPerPacket + relative_offset);
+ 
+   const uint64_t bits_to_copy = GetAmountOfBitsToRead(static_cast<uint32_t>(stream.BitsRemaining()),
+                                                       packet_info.current_frame_size_);
+@@ -655,16 +683,14 @@
+   if (bits_to_copy == 0) {
+     REXAPU_ERROR("XmaContext {}: There are no bits to copy!", id());
+     SwapInputBuffer(data);
+-    return;
++    return DecodeResult::kReady;
+   }
+ 
+   if (packet_info.isLastFrameInPacket()) {
+     if (stream.BitsRemaining() < packet_info.current_frame_size_) {
+-      const uint8_t* next_packet =
+-          GetNextPacket(data, next_packet_index, current_input_packet_count);
++      const uint8_t* next_packet = following_packet;
+       if (!next_packet) {
+-        data->error_status = 4;
+-        return;
++        return wait_for_following_packet();
+       }
+       std::memcpy(input_buffer_.data() + kBytesPerPacketData, next_packet + kBytesPerPacketHeader,
+                   kBytesPerPacketData);
+@@ -751,17 +777,30 @@
+     carry_valid_ = false;
+   }
+ 
++  if (completing_split) {
++    split_packet_pending_ = false;
++    // Continue with the successor's first new frame, or retire it if it
++    // contains only continuation bits, matching the normal cross-buffer path.
++    const uint32_t next_frame_offset = xma::GetPacketFrameOffset(following_packet);
++    if (next_frame_offset > kMaxFrameSizeinBits) {
++      SwapInputBuffer(data);
++    } else {
++      data->input_buffer_read_offset = next_frame_offset;
++    }
++    return DecodeResult::kReady;
++  }
++
+   // Compute where to go next.
+   if (is_loop_end_frame) {
+     UpdateLoopStatus(data);
+-    return;
++    return DecodeResult::kReady;
+   }
+ 
+   if (!packet_info.isLastFrameInPacket()) {
+     const uint32_t next_frame_offset =
+         (data->input_buffer_read_offset + bits_to_copy) % kBitsPerPacket;
+     data->input_buffer_read_offset = (packet_index * kBitsPerPacket) + next_frame_offset;
+-    return;
++    return DecodeResult::kReady;
+   }
+ 
+   uint32_t next_input_offset =
+@@ -775,11 +814,12 @@
+ 
+       if (next_input_offset > kMaxFrameSizeinBits) {
+         SwapInputBuffer(data);
+-        return;
++        return DecodeResult::kReady;
+       }
+     }
+   }
+   data->input_buffer_read_offset = next_input_offset;
++  return DecodeResult::kReady;
+ }
+ 
+ void XmaContext::ConvertFrame(const uint8_t** samples, bool is_two_channel,

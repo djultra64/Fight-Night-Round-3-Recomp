@@ -1,0 +1,14 @@
+--- a/src/graphics/vulkan/render_target_cache.cpp
++++ b/src/graphics/vulkan/render_target_cache.cpp
+@@ -1574,9 +1574,10 @@
+   for (uint32_t i = 0; i < xenos::kMaxColorRenderTargets; ++i) {
+     VkRenderingAttachmentInfo& color_attachment = color_attachments[i];
+     std::memset(&color_attachment, 0, sizeof(VkRenderingAttachmentInfo));
++    // Null images are valid holes, but every included array entry needs its type.
++    color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+     if ((key.depth_and_color_used & (1 << (1 + i))) && rts[1 + i]) {
+       const auto* vulkan_rt = static_cast<const VulkanRenderTarget*>(rts[1 + i]);
+-      color_attachment.sType = VK_STRUCTURE_TYPE_RENDERING_ATTACHMENT_INFO;
+       color_attachment.pNext = nullptr;
+       color_attachment.imageView = vulkan_rt->view_depth_color();
+       color_attachment.imageLayout = VulkanRenderTarget::kColorDrawLayout;
